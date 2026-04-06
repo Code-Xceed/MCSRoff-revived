@@ -21,6 +21,7 @@ public final class RemoteMatchSnapshot {
     private final SeedMode seedMode;
     private final long countdownTargetEpochMillis;
     private final List<RemoteMatchPlayer> players;
+    private final List<RemoteMatchEvent> events;
 
     public RemoteMatchSnapshot(
             String queueStatus,
@@ -32,7 +33,8 @@ public final class RemoteMatchSnapshot {
             String fsgFilterId,
             SeedMode seedMode,
             long countdownTargetEpochMillis,
-            List<RemoteMatchPlayer> players
+            List<RemoteMatchPlayer> players,
+            List<RemoteMatchEvent> events
     ) {
         this.queueStatus = queueStatus;
         this.matchId = matchId;
@@ -44,6 +46,7 @@ public final class RemoteMatchSnapshot {
         this.seedMode = seedMode == null ? SeedMode.MATCH : seedMode;
         this.countdownTargetEpochMillis = countdownTargetEpochMillis;
         this.players = players == null ? Collections.<RemoteMatchPlayer>emptyList() : Collections.unmodifiableList(new ArrayList<RemoteMatchPlayer>(players));
+        this.events = events == null ? Collections.<RemoteMatchEvent>emptyList() : Collections.unmodifiableList(new ArrayList<RemoteMatchEvent>(events));
     }
 
     public String getQueueStatus() {
@@ -86,12 +89,17 @@ public final class RemoteMatchSnapshot {
         return this.players;
     }
 
+    public List<RemoteMatchEvent> getEvents() {
+        return this.events;
+    }
+
     public static RemoteMatchSnapshot fromJson(JsonObject root) {
         JsonObject match = root != null && root.has("match") && root.get("match").isJsonObject()
                 ? root.getAsJsonObject("match")
                 : root;
 
         List<RemoteMatchPlayer> players = new ArrayList<RemoteMatchPlayer>();
+        List<RemoteMatchEvent> events = new ArrayList<RemoteMatchEvent>();
         if (match != null && match.has("players") && match.get("players").isJsonArray()) {
             JsonArray array = match.getAsJsonArray("players");
             for (JsonElement element : array) {
@@ -106,7 +114,28 @@ public final class RemoteMatchSnapshot {
                         getString(player, "rank_snapshot"),
                         getString(player, "slot"),
                         getString(player, "world_status"),
-                        getBoolean(player, "connected", true)
+                        getBoolean(player, "connected", true),
+                        getString(player, "activity_status")
+                ));
+            }
+        }
+
+        if (match != null && match.has("events") && match.get("events").isJsonArray()) {
+            JsonArray array = match.getAsJsonArray("events");
+            for (JsonElement element : array) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject event = element.getAsJsonObject();
+                events.add(new RemoteMatchEvent(
+                        getLong(event, "seq", 0L),
+                        getString(event, "player_id"),
+                        getString(event, "type"),
+                        getString(event, "activity_key"),
+                        getString(event, "status_text"),
+                        getString(event, "chat_message"),
+                        getString(event, "advancement_id"),
+                        getLong(event, "created_at", 0L)
                 ));
             }
         }
@@ -121,7 +150,8 @@ public final class RemoteMatchSnapshot {
                 getString(match, "fsg_filter_id"),
                 parseSeedMode(getString(match, "seed_mode")),
                 getLong(match, "countdown_target_epoch_millis", 0L),
-                players
+                players,
+                events
         );
     }
 

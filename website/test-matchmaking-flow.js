@@ -62,6 +62,28 @@ async function main() {
     assert.strictEqual(finalSnapshot.match.state, 'countdown', 'countdown did not start after both ready');
     assert(finalSnapshot.match.countdown_target_epoch_millis > Date.now(), 'countdown target missing or invalid');
 
+    const activitySnapshot = await matchmaker(playerOne.accessToken, {
+      action: 'report_activity',
+      match_id: joinTwo.match.id,
+      type: 'advancement',
+      activity_key: 'minecraft:story/enter_the_nether',
+      status_text: 'Entered Nether',
+      chat_message: 'We Need to Go Deeper',
+      advancement_id: 'minecraft:story/enter_the_nether'
+    });
+    const opponentView = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
+    assert(activitySnapshot.match.events.length > 0, 'match event missing after activity report');
+    assert(opponentView.match.players.some((player) => player.activity_status === 'Entered Nether'), 'opponent activity status did not propagate');
+
+    const requeueSnapshot = await matchmaker(playerOne.accessToken, {
+      action: 'join_queue',
+      seed_mode: 'MATCH',
+      seed_type_label: 'ZSG Mapless',
+      filter_ids: ['zsg']
+    });
+    assert.strictEqual(requeueSnapshot.queue_status, 'searching', 'requeue should not revive the previous opponent');
+    assert(!requeueSnapshot.match, 'requeue unexpectedly returned the previous active match');
+
     console.log('Matchmaking flow passed.');
     console.log(`Match ID: ${finalSnapshot.match.id}`);
     console.log(`Seed: ${finalSnapshot.match.seed}`);
@@ -107,6 +129,7 @@ async function createLinkedPlayer(prefix) {
   return {
     username,
     displayName,
+    userId: poll.body.session.user.id,
     accessToken: poll.body.session.access_token,
     refreshToken: poll.body.session.refresh_token
   };

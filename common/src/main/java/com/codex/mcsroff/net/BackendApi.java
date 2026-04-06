@@ -71,6 +71,25 @@ public final class BackendApi {
         return invokeSnapshotAsync("mark_ready", payload, session);
     }
 
+    public CompletableFuture<RemoteMatchSnapshot> reportActivity(
+            final AuthSession session,
+            final String matchId,
+            final String type,
+            final String activityKey,
+            final String statusText,
+            final String chatMessage,
+            final String advancementId
+    ) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("match_id", matchId);
+        payload.addProperty("type", type);
+        payload.addProperty("activity_key", activityKey);
+        payload.addProperty("status_text", statusText);
+        payload.addProperty("chat_message", chatMessage);
+        payload.addProperty("advancement_id", advancementId);
+        return invokeSnapshotAsync("report_activity", payload, session);
+    }
+
     private CompletableFuture<RemoteMatchSnapshot> invokeSnapshotAsync(final String action, final JsonObject payload, final AuthSession session) {
         return CompletableFuture.supplyAsync(() -> {
             try {

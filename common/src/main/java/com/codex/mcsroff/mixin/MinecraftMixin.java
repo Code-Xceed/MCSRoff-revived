@@ -12,5 +12,6 @@ public abstract class MinecraftMixin {
     @Inject(method = "tick", at = @At("TAIL"))
     private void mcsroff$runPreRaceController(CallbackInfo callbackInfo) {
         McsroffRuntime.getPreRaceController().onClientTick((Minecraft) (Object) this);
+        McsroffRuntime.getTelemetryManager().onClientTick((Minecraft) (Object) this);
     }
 }

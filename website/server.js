@@ -18,6 +18,9 @@ const WEB_SESSION_TTL_SECONDS = 60 * 60 * 24 * 14;
 const DEVICE_LINK_TTL_SECONDS = 60 * 10;
 const POLL_INTERVAL_SECONDS = 3;
 const PASSWORD_ITERATIONS = 120000;
+const MATCH_PLAYER_STALE_MILLIS = 15000;
+const MATCH_PRESTART_STALE_MILLIS = 60000;
+const MATCH_RUNNING_STALE_MILLIS = 180000;
 
 const TABLES = {
   users: path.join(DATA_DIR, 'users.json'),
@@ -553,16 +556,15 @@ async function handleMatchmaker(request, response) {
   if (action === 'mark_ready') {
     return handleMarkReady(response, user, body);
   }
+  if (action === 'report_activity') {
+    return handleReportActivity(response, user, body);
+  }
 
   return sendJson(response, 400, { error: 'Unknown action' });
 }
 
 async function handleJoinQueue(response, user, body) {
-  const activeMatch = findActiveMatchForUser(user.id);
-  if (activeMatch) {
-    persistMatchState(activeMatch);
-    return sendJson(response, 200, buildSnapshotResponse('matched', activeMatch));
-  }
+  abandonActiveMatchesForUser(user.id, 'player_requeued');
 
   const seedMode = normalizeSeedMode(body.seed_mode);
   const filterIds = sanitizeFilterIds(body.filter_ids);
@@ -586,6 +588,7 @@ async function handleJoinQueue(response, user, body) {
     claimedMatchId: '',
     createdAt: Date.now(),
     updatedAt: Date.now(),
+    lastSeenAt: Date.now(),
     expiresAt: Date.now() + (2 * 60 * 1000)
   };
 
@@ -618,6 +621,7 @@ function handlePollMatch(response, user, body) {
     return sendJson(response, 200, { queue_status: 'searching' });
   }
 
+  touchMatchPlayer(match, user.id);
   persistMatchState(match);
   return sendJson(response, 200, buildSnapshotResponse('matched', match));
 }
@@ -650,6 +654,7 @@ function handleMarkWorldGenerated(response, user, body) {
   }
 
   const player = findMatchPlayer(match, user.id);
+  touchMatchPlayer(match, user.id);
   player.worldStatus = 'generated';
   player.updatedAt = Date.now();
   updateMatchStateFromPlayers(match);
@@ -664,6 +669,7 @@ function handleMarkReady(response, user, body) {
   }
 
   const player = findMatchPlayer(match, user.id);
+  touchMatchPlayer(match, user.id);
   player.worldStatus = 'ready';
   player.readyAt = Date.now();
   player.updatedAt = Date.now();
@@ -672,6 +678,56 @@ function handleMarkReady(response, user, body) {
     match.state = 'countdown';
     match.countdownTargetEpochMillis = Date.now() + 10000;
   }
+  persistMatchState(match);
+  return sendJson(response, 200, buildSnapshotResponse('matched', match));
+}
+
+function handleReportActivity(response, user, body) {
+  const match = requireOwnedMatch(user.id, body.match_id);
+  if (!match) {
+    return sendJson(response, 404, { error: 'Match not found' });
+  }
+
+  const player = findMatchPlayer(match, user.id);
+  if (!player) {
+    return sendJson(response, 404, { error: 'Player not found in match' });
+  }
+
+  const type = sanitizeDisplayText(body.type, 24) || 'activity';
+  const activityKey = sanitizeDisplayText(body.activity_key, 96);
+  const statusText = sanitizeDisplayText(body.status_text, 64);
+  const chatMessage = sanitizeDisplayText(body.chat_message, 128);
+  const advancementId = sanitizeDisplayText(body.advancement_id, 128);
+  const now = Date.now();
+
+  touchMatchPlayer(match, user.id);
+  if (statusText) {
+    player.activityStatus = statusText;
+    player.updatedAt = now;
+  }
+
+  if (activityKey || chatMessage) {
+    if (!Array.isArray(match.events)) {
+      match.events = [];
+    }
+    if (!match.nextEventSeq) {
+      match.nextEventSeq = 1;
+    }
+    match.events.push({
+      seq: match.nextEventSeq++,
+      playerId: user.id,
+      type,
+      activityKey,
+      statusText,
+      chatMessage,
+      advancementId,
+      createdAt: now
+    });
+    if (match.events.length > 80) {
+      match.events = match.events.slice(match.events.length - 80);
+    }
+  }
+
   persistMatchState(match);
   return sendJson(response, 200, buildSnapshotResponse('matched', match));
 }
@@ -913,6 +969,8 @@ function createMatchFromQueue(hostEntry, opponentEntry, seedAssignment) {
     countdownTargetEpochMillis: 0,
     abortReason: '',
     winnerPlayerId: '',
+    nextEventSeq: 1,
+    events: [],
     createdAt: now,
     updatedAt: now,
     players: [
@@ -932,6 +990,8 @@ function createMatchPlayer(queueEntry, slot, now) {
     slot,
     connected: true,
     worldStatus: 'queued',
+    activityStatus: 'Started Match',
+    lastSeenAt: now,
     readyAt: 0,
     finishedAt: 0,
     finishTimeMs: 0,
@@ -1046,6 +1106,7 @@ function worldStage(status) {
 }
 
 function persistMatchState(match) {
+  trimMatchEvents(match);
   normalizeCountdownState(match);
   updateMatchStateFromPlayers(match);
   match.updatedAt = Date.now();
@@ -1059,12 +1120,19 @@ function persistMatchState(match) {
 
 function cleanupMatchmakerState() {
   const now = Date.now();
-  const queueEntries = loadTable('queueEntries').filter((entry) => entry.expiresAt > now && entry.status === 'searching');
+  const queueEntries = loadTable('queueEntries').filter((entry) =>
+    entry.expiresAt > now
+    && entry.status === 'searching'
+    && (!entry.lastSeenAt || (now - entry.lastSeenAt) <= MATCH_PLAYER_STALE_MILLIS)
+  );
   saveTable('queueEntries', queueEntries);
 
   const matches = loadTable('matches');
   let changed = false;
   for (const match of matches) {
+    if (expireDisconnectedMatch(match, now)) {
+      changed = true;
+    }
     const previousState = match.state;
     normalizeCountdownState(match);
     if (match.state !== previousState) {
@@ -1092,6 +1160,7 @@ function buildSnapshotResponse(queueStatus, match) {
       seed: match.seed,
       fsg_filter_id: match.fsgFilterId,
       fsg_token: match.fsgToken,
+      abort_reason: match.abortReason || '',
       countdown_target_epoch_millis: match.countdownTargetEpochMillis || 0,
       players: (match.players || []).map((player) => ({
         player_id: player.playerId,
@@ -1101,7 +1170,18 @@ function buildSnapshotResponse(queueStatus, match) {
         rank_snapshot: player.rankSnapshot,
         slot: player.slot,
         world_status: player.worldStatus,
-        connected: player.connected !== false
+        connected: player.connected !== false,
+        activity_status: player.activityStatus || ''
+      })),
+      events: (match.events || []).map((event) => ({
+        seq: event.seq || 0,
+        player_id: event.playerId || '',
+        type: event.type || '',
+        activity_key: event.activityKey || '',
+        status_text: event.statusText || '',
+        chat_message: event.chatMessage || '',
+        advancement_id: event.advancementId || '',
+        created_at: event.createdAt || 0
       }))
     }
   };
@@ -1148,6 +1228,81 @@ async function fetchFsgSeed(seedMode, filterIds) {
     filterId: payload.filter || usableFilters[0],
     token: payload.token || ''
   };
+}
+
+function abandonActiveMatchesForUser(userId, reason) {
+  const matches = loadTable('matches');
+  let changed = false;
+  for (const match of matches) {
+    const activeStates = new Set(['matched', 'world_generating', 'world_generated', 'countdown', 'running']);
+    if (!activeStates.has(match.state)) {
+      continue;
+    }
+    const player = findMatchPlayer(match, userId);
+    if (!player) {
+      continue;
+    }
+    markMatchAborted(match, reason || 'player_abandoned', userId);
+    changed = true;
+  }
+  if (changed) {
+    saveTable('matches', matches);
+  }
+}
+
+function touchMatchPlayer(match, userId) {
+  const player = findMatchPlayer(match, userId);
+  if (!player) {
+    return null;
+  }
+  player.connected = true;
+  player.lastSeenAt = Date.now();
+  player.updatedAt = Date.now();
+  return player;
+}
+
+function expireDisconnectedMatch(match, now) {
+  const activeStates = new Set(['matched', 'world_generating', 'world_generated', 'countdown', 'running']);
+  if (!activeStates.has(match.state) || !Array.isArray(match.players)) {
+    return false;
+  }
+
+  const staleMillis = match.state === 'running' ? MATCH_RUNNING_STALE_MILLIS : MATCH_PRESTART_STALE_MILLIS;
+  const stalePlayer = match.players.find((player) => !player.lastSeenAt || (now - player.lastSeenAt) > staleMillis);
+  if (!stalePlayer) {
+    return false;
+  }
+
+  markMatchAborted(match, 'presence_timeout', stalePlayer.playerId);
+  return true;
+}
+
+function markMatchAborted(match, reason, actorUserId) {
+  match.state = 'aborted';
+  match.abortReason = reason || 'aborted';
+  match.countdownTargetEpochMillis = 0;
+  match.updatedAt = Date.now();
+  if (!Array.isArray(match.players)) {
+    return;
+  }
+
+  match.players.forEach((player) => {
+    if (actorUserId && player.playerId === actorUserId) {
+      player.connected = false;
+      player.worldStatus = 'disconnected';
+      player.activityStatus = 'Disconnected';
+    } else if (player.worldStatus !== 'finished') {
+      player.activityStatus = 'Opponent disconnected';
+    }
+    player.updatedAt = Date.now();
+  });
+}
+
+function trimMatchEvents(match) {
+  if (!Array.isArray(match.events) || match.events.length <= 80) {
+    return;
+  }
+  match.events = match.events.slice(match.events.length - 80);
 }
 
 function findUserById(users, userId) {
