@@ -4,6 +4,8 @@ import com.codex.mcsroff.McsroffRuntime;
 import com.codex.mcsroff.auth.AuthSession;
 import com.codex.mcsroff.match.MatchOpponent;
 import com.codex.mcsroff.match.MatchSession;
+import com.codex.mcsroff.net.RemoteMatchPlayer;
+import com.codex.mcsroff.net.RemoteMatchSnapshot;
 import com.codex.mcsroff.seed.SeedAssignment;
 import com.codex.mcsroff.seed.SeedMode;
 import com.mojang.authlib.GameProfile;
@@ -24,8 +26,8 @@ import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 
 public final class MatchmakingScreen extends Screen {
-    private static final long DUMMY_OPPONENT_FOUND_AFTER_MILLIS = 5000L;
     private static final long REDIRECT_COUNTDOWN_MILLIS = 3000L;
+    private static final long POLL_INTERVAL_MILLIS = 1000L;
     private static final UUID OPPONENT_UUID = UUID.fromString("7a97bce6-8f18-4c86-a913-7d0ec408a677");
     private static final int FRAME_LIGHT = 0xFF6E6E6E;
     private static final int FRAME_DARK = 0xFF2A2A2A;
@@ -39,14 +41,19 @@ public final class MatchmakingScreen extends Screen {
     private final long startedAtMillis;
     private final MatchmakingProfile localProfile;
     private final MatchmakingProfile searchingOpponentProfile;
-    private final MatchmakingProfile foundOpponentProfile;
+    private final AuthSession authSession;
 
-    private CompletableFuture<SeedAssignment> seedFuture;
+    private CompletableFuture<RemoteMatchSnapshot> backendFuture;
+    private RemoteMatchSnapshot lastSnapshot;
+    private MatchmakingProfile liveOpponentProfile;
     private SeedAssignment preparedSeed;
+    private String activeMatchId = "";
+    private String localSlot = "host";
     private boolean opponentFound;
-    private String statusLine = "Contacting FSG and searching for an opponent...";
-    private long redirectTargetMillis = -1L;
     private boolean launchTriggered;
+    private long redirectTargetMillis = -1L;
+    private long nextPollAtMillis = -1L;
+    private String statusLine = "Checking trusted queue access...";
     private String opponentWorldStatus = "Waiting";
 
     private Button cancelButton;
@@ -58,9 +65,10 @@ public final class MatchmakingScreen extends Screen {
         this.selectedSeedTypeLabel = selectedSeedTypeLabel;
         this.requestedFilterIds = requestedFilterIds;
         this.startedAtMillis = System.currentTimeMillis();
+        this.authSession = McsroffRuntime.getAccountManager().getCurrentSession();
         this.localProfile = createLocalProfile();
         this.searchingOpponentProfile = createSearchingOpponentProfile();
-        this.foundOpponentProfile = createFoundOpponentProfile();
+        this.liveOpponentProfile = this.searchingOpponentProfile;
     }
 
     @Override
@@ -70,44 +78,35 @@ public final class MatchmakingScreen extends Screen {
         this.cancelButton = this.addScreenButton(new Button(centerX - 70, bottomY, 140, 20, new TextComponent("Cancel Matchmaking"), new Button.OnPress() {
             @Override
             public void onPress(Button button) {
-                onClose();
+                cancelAndReturn();
             }
         }));
-        this.seedFuture = McsroffRuntime.getFsgApi().requestSeed(this.requestedFilterIds, this.seedMode);
+
+        if (this.authSession == null) {
+            this.statusLine = "Trusted account session missing.";
+            this.cancelButton.setMessage(new TextComponent("Back"));
+            return;
+        }
+
+        requestJoinQueue();
     }
 
     @Override
     public void tick() {
-        if (!this.opponentFound && System.currentTimeMillis() - this.startedAtMillis >= DUMMY_OPPONENT_FOUND_AFTER_MILLIS) {
-            this.opponentFound = true;
-            this.opponentWorldStatus = "Waiting";
-            updateStatusLine();
-        }
+        long now = System.currentTimeMillis();
+        consumeBackendResult();
 
-        if (this.seedFuture != null && this.seedFuture.isDone()) {
-            try {
-                this.preparedSeed = this.seedFuture.join();
-            } catch (Exception exception) {
-                this.statusLine = "Seed prep failed: " + unwrapMessage(exception);
-            } finally {
-                this.seedFuture = null;
-                updateStatusLine();
-            }
-        } else {
-            updateStatusLine();
-        }
-
-        if (this.opponentFound && this.preparedSeed != null && this.redirectTargetMillis < 0L && !this.launchTriggered) {
-            this.redirectTargetMillis = System.currentTimeMillis() + REDIRECT_COUNTDOWN_MILLIS;
-            this.opponentWorldStatus = "Generating world";
-            if (this.cancelButton != null) {
-                this.cancelButton.active = false;
-            }
-            updateStatusLine();
-        }
-
-        if (!this.launchTriggered && this.redirectTargetMillis > 0L && System.currentTimeMillis() >= this.redirectTargetMillis) {
+        if (!this.launchTriggered && this.redirectTargetMillis > 0L && now >= this.redirectTargetMillis) {
             beginWorldLaunch();
+            return;
+        }
+
+        if (this.authSession != null && !this.launchTriggered && this.backendFuture == null && now >= this.nextPollAtMillis) {
+            if (this.activeMatchId.isEmpty()) {
+                requestJoinQueue();
+            } else {
+                requestPollMatch();
+            }
         }
     }
 
@@ -125,7 +124,7 @@ public final class MatchmakingScreen extends Screen {
         int panelY = 48;
 
         renderProfilePanel(poseStack, leftX, panelY, panelWidth, panelHeight, "You", this.localProfile, true);
-        renderCenterColumn(poseStack, panelWidth, panelY, panelHeight);
+        renderCenterColumn(poseStack, panelWidth, panelY);
         renderProfilePanel(poseStack, rightX, panelY, panelWidth, panelHeight, this.opponentFound ? "Opponent Found" : "Searching", getDisplayedOpponentProfile(), this.opponentFound);
         renderRedirectFooter(poseStack);
         renderOpponentWorldStatus(poseStack);
@@ -135,17 +134,181 @@ public final class MatchmakingScreen extends Screen {
 
     @Override
     public void onClose() {
+        cancelAndReturn();
+    }
+
+    private void requestJoinQueue() {
+        if (this.backendFuture != null || this.authSession == null) {
+            return;
+        }
+        this.statusLine = "Entering trusted matchmaking queue...";
+        this.backendFuture = McsroffRuntime.getAccountManager().executeAuthenticated(session ->
+                McsroffRuntime.getBackendApi().joinQueue(
+                        session,
+                        this.localProfile.getName(),
+                        this.seedMode,
+                        this.selectedSeedTypeLabel,
+                        this.requestedFilterIds
+                )
+        );
+        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+    }
+
+    private void requestPollMatch() {
+        if (this.backendFuture != null || this.authSession == null || this.activeMatchId.isEmpty()) {
+            return;
+        }
+        this.backendFuture = McsroffRuntime.getAccountManager().executeAuthenticated(session ->
+                McsroffRuntime.getBackendApi().pollMatch(session, this.activeMatchId)
+        );
+        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+    }
+
+    private void consumeBackendResult() {
+        if (this.backendFuture == null || !this.backendFuture.isDone()) {
+            return;
+        }
+
+        try {
+            applySnapshot(this.backendFuture.join());
+        } catch (Exception exception) {
+            this.statusLine = "Matchmaking sync retrying...";
+            this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+        } finally {
+            this.backendFuture = null;
+        }
+    }
+
+    private void applySnapshot(RemoteMatchSnapshot snapshot) {
+        this.lastSnapshot = snapshot;
+        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+        if (snapshot == null) {
+            this.statusLine = "Queue is waiting for backend response...";
+            return;
+        }
+
+        this.activeMatchId = safe(snapshot.getMatchId());
+        applySeed(snapshot);
+        applyPlayers(snapshot);
+        updateStatusLine(snapshot);
+
+        if (this.opponentFound && this.preparedSeed != null && this.redirectTargetMillis < 0L && !this.launchTriggered) {
+            this.redirectTargetMillis = System.currentTimeMillis() + REDIRECT_COUNTDOWN_MILLIS;
+            if (this.cancelButton != null) {
+                this.cancelButton.active = false;
+            }
+        }
+    }
+
+    private void applySeed(RemoteMatchSnapshot snapshot) {
+        if (snapshot.getSeed() == null || snapshot.getSeed().isEmpty()) {
+            return;
+        }
+        this.preparedSeed = new SeedAssignment(
+                snapshot.getSeed(),
+                snapshot.getFsgFilterId(),
+                snapshot.getFsgToken(),
+                snapshot.getSeedMode()
+        );
+    }
+
+    private void applyPlayers(RemoteMatchSnapshot snapshot) {
+        AuthSession liveSession = McsroffRuntime.getAccountManager().getCurrentSession();
+        String localUserId = liveSession != null ? liveSession.getUserId() : this.authSession != null ? this.authSession.getUserId() : "";
+        RemoteMatchPlayer opponentPlayer = null;
+        RemoteMatchPlayer localPlayer = null;
+        for (RemoteMatchPlayer player : snapshot.getPlayers()) {
+            if (!localUserId.isEmpty() && localUserId.equals(player.getPlayerId())) {
+                localPlayer = player;
+                if (player.getSlot() != null && !player.getSlot().isEmpty()) {
+                    this.localSlot = player.getSlot();
+                }
+            } else {
+                opponentPlayer = player;
+            }
+        }
+
+        if (opponentPlayer != null) {
+            this.opponentFound = true;
+            this.opponentWorldStatus = humanizeWorldStatus(opponentPlayer.getWorldStatus());
+            this.liveOpponentProfile = new MatchmakingProfile(
+                    safe(opponentPlayer.getDisplayName()),
+                    opponentPlayer.getElo(),
+                    safe(opponentPlayer.getRank()),
+                    "Trusted queue opponent",
+                    "--",
+                    this.opponentWorldStatus,
+                    DefaultPlayerSkin.getDefaultSkin(OPPONENT_UUID)
+            );
+        } else {
+            this.opponentFound = false;
+            this.opponentWorldStatus = "Waiting";
+            this.liveOpponentProfile = this.searchingOpponentProfile;
+        }
+    }
+
+    private void updateStatusLine(RemoteMatchSnapshot snapshot) {
+        if (this.launchTriggered) {
+            this.statusLine = "Opening race world from backend seed assignment.";
+            return;
+        }
+        if (this.redirectTargetMillis > 0L) {
+            this.statusLine = "Opponent found and shared seed locked. Redirecting to world generation.";
+            return;
+        }
+        if (this.activeMatchId.isEmpty()) {
+            this.statusLine = "Searching for a compatible runner in queue...";
+            return;
+        }
+        if (this.preparedSeed == null) {
+            this.statusLine = "Match found. Waiting for backend seed assignment...";
+            return;
+        }
+        this.statusLine = "Match found. Shared race seed is ready.";
+    }
+
+    private void beginWorldLaunch() {
+        this.launchTriggered = true;
+        try {
+            MatchOpponent opponent = toMatchOpponent(this.liveOpponentProfile);
+            MatchSession session = McsroffRuntime.getMatchManager().beginMatchedSession(
+                    this.activeMatchId,
+                    this.localSlot,
+                    this.preparedSeed,
+                    this.selectedSeedTypeLabel,
+                    opponent
+            );
+            McsroffRuntime.getPreRaceController().armLocalStart(session);
+            this.minecraft.setScreen(new WorldPreparationScreen());
+            String worldId = McsroffRuntime.getWorldLauncher().launchSeedWorld(this.preparedSeed);
+            McsroffRuntime.getMatchManager().bindCurrentSessionToWorld(worldId);
+        } catch (RuntimeException exception) {
+            this.launchTriggered = false;
+            this.redirectTargetMillis = -1L;
+            this.statusLine = "World creation failed: " + unwrapMessage(exception);
+            if (this.cancelButton != null) {
+                this.cancelButton.active = true;
+            }
+        }
+    }
+
+    private void cancelAndReturn() {
+        if (!this.launchTriggered && McsroffRuntime.getAccountManager().hasTrustedSession()) {
+            McsroffRuntime.getAccountManager().executeAuthenticated(session ->
+                    McsroffRuntime.getBackendApi().cancelQueue(session)
+            );
+        }
         this.minecraft.setScreen(this.homeScreen);
     }
 
-    private void renderCenterColumn(PoseStack poseStack, int panelWidth, int panelY, int panelHeight) {
+    private void renderCenterColumn(PoseStack poseStack, int panelWidth, int panelY) {
         int centerLeft = panelWidth + 56;
         int centerRight = this.width - panelWidth - 56;
         int centerX = this.width / 2;
         int centerWidth = centerRight - centerLeft;
 
         drawCenteredString(poseStack, this.font, new TextComponent(this.opponentFound ? "MATCH FOUND" : "SEARCHING"), centerX, panelY + 10, 16777215);
-        drawCenteredString(poseStack, this.font, new TextComponent(this.opponentFound ? "Opponent locked" : "Scanning queue"), centerX, panelY + 24, 11184810);
+        drawCenteredString(poseStack, this.font, new TextComponent(this.opponentFound ? "Backend lock confirmed" : "Trusted queue scan"), centerX, panelY + 24, 11184810);
 
         if (this.opponentFound) {
             renderScaledCenteredText(poseStack, "VS", centerX, panelY + 38, 2.7F, 0xFFE0C36A);
@@ -164,27 +327,16 @@ public final class MatchmakingScreen extends Screen {
     }
 
     private void renderRedirectFooter(PoseStack poseStack) {
-        int centerX = this.width / 2;
-        int timerY = this.cancelButton.y - 12;
-        String timerLine;
-        int color;
-
-        if (this.launchTriggered) {
-            timerLine = "Redirecting to world creation...";
-            color = 14737632;
-        } else if (this.redirectTargetMillis > 0L) {
-            timerLine = "Redirecting in " + formatRedirectCountdown();
-            color = 0xFFE0C36A;
-        } else if (this.opponentFound) {
-            timerLine = "Preparing redirect...";
-            color = 14737632;
-        } else {
-            timerLine = "";
-            color = 14737632;
+        if (this.cancelButton == null) {
+            return;
         }
 
-        if (!timerLine.isEmpty()) {
-            drawCenteredString(poseStack, this.font, new TextComponent(timerLine), centerX, timerY, color);
+        int centerX = this.width / 2;
+        int timerY = this.cancelButton.y - 12;
+        if (this.launchTriggered) {
+            drawCenteredString(poseStack, this.font, new TextComponent("Redirecting to world creation..."), centerX, timerY, 14737632);
+        } else if (this.redirectTargetMillis > 0L) {
+            drawCenteredString(poseStack, this.font, new TextComponent("Redirecting in " + formatRedirectCountdown()), centerX, timerY, 0xFFE0C36A);
         }
     }
 
@@ -195,9 +347,8 @@ public final class MatchmakingScreen extends Screen {
 
         int right = this.width - 14;
         int bottom = this.height - 54;
-        String nameLine = this.foundOpponentProfile.getName();
+        String nameLine = this.liveOpponentProfile.getName();
         String statusLineText = "World: " + this.opponentWorldStatus;
-
         this.font.drawShadow(poseStack, nameLine, right - this.font.width(nameLine), bottom - 10, 16777215);
         this.font.drawShadow(poseStack, statusLineText, right - this.font.width(statusLineText), bottom, 14737632);
     }
@@ -251,58 +402,7 @@ public final class MatchmakingScreen extends Screen {
     }
 
     private MatchmakingProfile getDisplayedOpponentProfile() {
-        return this.opponentFound ? this.foundOpponentProfile : this.searchingOpponentProfile;
-    }
-
-    private void updateStatusLine() {
-        if (this.launchTriggered) {
-            this.statusLine = "Opening race world and synchronizing both runners.";
-            return;
-        }
-
-        if (this.redirectTargetMillis > 0L) {
-            this.statusLine = "Race seed locked. Redirecting both runners to world creation.";
-            return;
-        }
-
-        if (this.preparedSeed == null && this.seedFuture != null) {
-            this.statusLine = this.opponentFound
-                    ? "Opponent locked. Finalizing race seed..."
-                    : "Securing race seed and scanning queue...";
-            return;
-        }
-
-        if (this.preparedSeed != null) {
-            this.statusLine = this.opponentFound
-                    ? "Race seed locked. Match preview ready."
-                    : "Race seed locked. Waiting for opponent...";
-        }
-    }
-
-    private void beginWorldLaunch() {
-        this.launchTriggered = true;
-        this.opponentWorldStatus = "Generating world";
-        if (this.cancelButton != null) {
-            this.cancelButton.active = false;
-        }
-        updateStatusLine();
-
-        try {
-            MatchSession session = McsroffRuntime.getMatchManager().beginPendingLocalSession(this.preparedSeed, this.selectedSeedTypeLabel, toMatchOpponent(this.foundOpponentProfile));
-            McsroffRuntime.getPreRaceController().armLocalStart(session);
-            this.minecraft.setScreen(new WorldPreparationScreen());
-            String worldId = McsroffRuntime.getWorldLauncher().launchSeedWorld(this.preparedSeed);
-            McsroffRuntime.getMatchManager().bindCurrentSessionToWorld(worldId);
-        } catch (RuntimeException exception) {
-            this.launchTriggered = false;
-            this.redirectTargetMillis = -1L;
-            this.opponentWorldStatus = "Waiting";
-            McsroffRuntime.getMatchManager().clearCurrentSession();
-            this.statusLine = "World creation failed: " + unwrapMessage(exception);
-            if (this.cancelButton != null) {
-                this.cancelButton.active = true;
-            }
-        }
+        return this.opponentFound ? this.liveOpponentProfile : this.searchingOpponentProfile;
     }
 
     private String formatElapsed() {
@@ -326,7 +426,7 @@ public final class MatchmakingScreen extends Screen {
 
     private MatchmakingProfile createLocalProfile() {
         Minecraft minecraft = Minecraft.getInstance();
-        AuthSession session = McsroffRuntime.getAccountManager().getCurrentSession();
+        AuthSession session = this.authSession;
         String name = session != null && session.getDisplayName() != null && !session.getDisplayName().isEmpty()
                 ? session.getDisplayName()
                 : minecraft.getUser().getName();
@@ -335,10 +435,11 @@ public final class MatchmakingScreen extends Screen {
         String rank = session != null && session.getRankTier() != null && !session.getRankTier().isEmpty()
                 ? session.getRankTier()
                 : getRankForElo(elo);
-        String achievements = "Dragon PB " + (15 + (hash % 10)) + ":" + (10 + (hash % 49));
-        String record = (20 + (hash % 40)) + "W / " + (8 + (hash % 25)) + "L";
-        String status = session != null ? "Account Verified" : "Queue Ready";
-        return new MatchmakingProfile(name, elo, rank, achievements, record, status, resolveSkin(minecraft.getUser().getGameProfile()));
+        String achievements = "Trusted account";
+        String record = session != null && session.getUsername() != null && !session.getUsername().isEmpty()
+                ? session.getUsername()
+                : "--";
+        return new MatchmakingProfile(name, elo, rank, achievements, record, "Queue Ready", resolveSkin(minecraft.getUser().getGameProfile()));
     }
 
     private static MatchmakingProfile createSearchingOpponentProfile() {
@@ -349,18 +450,6 @@ public final class MatchmakingScreen extends Screen {
                 "Waiting for queue match",
                 "--",
                 "Open Slot",
-                DefaultPlayerSkin.getDefaultSkin(OPPONENT_UUID)
-        );
-    }
-
-    private static MatchmakingProfile createFoundOpponentProfile() {
-        return new MatchmakingProfile(
-                "NetherBurst",
-                1642,
-                "Diamond II",
-                "Zero-cycle route expert",
-                "38W / 16L",
-                "Opponent Locked",
                 DefaultPlayerSkin.getDefaultSkin(OPPONENT_UUID)
         );
     }
@@ -400,10 +489,6 @@ public final class MatchmakingScreen extends Screen {
         String ellipsis = "...";
         String base = this.font.plainSubstrByWidth(value, Math.max(12, maxWidth - this.font.width(ellipsis)));
         return base + ellipsis;
-    }
-
-    private String fitCentered(String value, int maxWidth) {
-        return fit(maxWidth, value);
     }
 
     private void renderScaledCenteredText(PoseStack poseStack, String value, int centerX, int baselineY, float scale, int color) {
@@ -453,6 +538,38 @@ public final class MatchmakingScreen extends Screen {
             return DefaultPlayerSkin.getDefaultSkin();
         }
         return DefaultPlayerSkin.getDefaultSkin(gameProfile.getId());
+    }
+
+    private static String humanizeWorldStatus(String backendStatus) {
+        if (backendStatus == null || backendStatus.isEmpty()) {
+            return "Waiting";
+        }
+        if ("queued".equalsIgnoreCase(backendStatus)) {
+            return "Waiting";
+        }
+        if ("generating".equalsIgnoreCase(backendStatus)) {
+            return "Generating world";
+        }
+        if ("generated".equalsIgnoreCase(backendStatus)) {
+            return "Generated";
+        }
+        if ("ready".equalsIgnoreCase(backendStatus)) {
+            return "Ready";
+        }
+        if ("running".equalsIgnoreCase(backendStatus)) {
+            return "Running";
+        }
+        if ("finished".equalsIgnoreCase(backendStatus)) {
+            return "Finished";
+        }
+        if ("disconnected".equalsIgnoreCase(backendStatus)) {
+            return "Disconnected";
+        }
+        return backendStatus;
+    }
+
+    private static String safe(String value) {
+        return value == null ? "" : value;
     }
 
     private static String unwrapMessage(Throwable throwable) {

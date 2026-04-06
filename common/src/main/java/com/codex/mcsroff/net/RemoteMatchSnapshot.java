@@ -8,13 +8,17 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
+import com.codex.mcsroff.seed.SeedMode;
+
 public final class RemoteMatchSnapshot {
     private final String queueStatus;
     private final String matchId;
     private final String state;
     private final String seed;
+    private final String fsgToken;
     private final String seedTypeLabel;
     private final String fsgFilterId;
+    private final SeedMode seedMode;
     private final long countdownTargetEpochMillis;
     private final List<RemoteMatchPlayer> players;
 
@@ -23,8 +27,10 @@ public final class RemoteMatchSnapshot {
             String matchId,
             String state,
             String seed,
+            String fsgToken,
             String seedTypeLabel,
             String fsgFilterId,
+            SeedMode seedMode,
             long countdownTargetEpochMillis,
             List<RemoteMatchPlayer> players
     ) {
@@ -32,8 +38,10 @@ public final class RemoteMatchSnapshot {
         this.matchId = matchId;
         this.state = state;
         this.seed = seed;
+        this.fsgToken = fsgToken;
         this.seedTypeLabel = seedTypeLabel;
         this.fsgFilterId = fsgFilterId;
+        this.seedMode = seedMode == null ? SeedMode.MATCH : seedMode;
         this.countdownTargetEpochMillis = countdownTargetEpochMillis;
         this.players = players == null ? Collections.<RemoteMatchPlayer>emptyList() : Collections.unmodifiableList(new ArrayList<RemoteMatchPlayer>(players));
     }
@@ -54,12 +62,20 @@ public final class RemoteMatchSnapshot {
         return this.seed;
     }
 
+    public String getFsgToken() {
+        return this.fsgToken;
+    }
+
     public String getSeedTypeLabel() {
         return this.seedTypeLabel;
     }
 
     public String getFsgFilterId() {
         return this.fsgFilterId;
+    }
+
+    public SeedMode getSeedMode() {
+        return this.seedMode;
     }
 
     public long getCountdownTargetEpochMillis() {
@@ -100,11 +116,20 @@ public final class RemoteMatchSnapshot {
                 getString(match, "id"),
                 getString(match, "state"),
                 getString(match, "seed"),
+                getString(match, "fsg_token"),
                 getString(match, "seed_type_label"),
                 getString(match, "fsg_filter_id"),
+                parseSeedMode(getString(match, "seed_mode")),
                 getLong(match, "countdown_target_epoch_millis", 0L),
                 players
         );
+    }
+
+    private static SeedMode parseSeedMode(String value) {
+        if ("PRACTICE".equalsIgnoreCase(value)) {
+            return SeedMode.PRACTICE;
+        }
+        return SeedMode.MATCH;
     }
 
     private static String getString(JsonObject object, String key) {

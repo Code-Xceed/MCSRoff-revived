@@ -31,7 +31,7 @@ public final class McsroffRuntime {
             return;
         }
 
-        backendApi = new BackendApi(McsroffMod.getConfig().getSupabaseFunctionUrl(), McsroffMod.getConfig().getSupabasePublishableKey());
+        backendApi = new BackendApi(trimTrailingSlash(McsroffMod.getConfig().getBackendBaseUrl()) + "/matchmaker", "");
         fsgApi = new FsgApi(McsroffMod.getConfig().getFsgBaseUrl());
         supabaseAuthApi = new SupabaseAuthApi(McsroffMod.getConfig().getSupabaseUrl(), McsroffMod.getConfig().getSupabasePublishableKey());
         webAuthApi = new WebAuthApi(McsroffMod.getConfig().getWebAuthApiBaseUrl());
@@ -44,6 +44,13 @@ public final class McsroffRuntime {
         McsroffScreens.bootstrap();
 
         bootstrapped = true;
+    }
+
+    private static String trimTrailingSlash(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return value.endsWith("/") ? value.substring(0, value.length() - 1) : value;
     }
 
     public static BackendApi getBackendApi() {

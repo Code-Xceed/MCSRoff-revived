@@ -40,8 +40,14 @@ public final class MatchManager {
         return session;
     }
 
+    public MatchSession beginMatchedSession(String matchId, String playerRole, SeedAssignment seedAssignment, String seedTypeLabel, MatchOpponent opponent) {
+        MatchSession session = new MatchSession(matchId, playerRole, seedAssignment, MatchPhase.WORLD_CREATING, seedTypeLabel, opponent);
+        this.currentSession = session;
+        return session;
+    }
+
     public MatchSession bindCurrentSessionToWorld(String worldId) {
-        if (this.currentSession != null) {
+        if (this.currentSession != null && this.currentSession.getMatchId() != null && this.currentSession.getMatchId().startsWith("local:")) {
             this.currentSession.setMatchId("local:" + worldId);
         }
         return this.currentSession;

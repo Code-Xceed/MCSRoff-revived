@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js",
-    "test-auth": "node test-auth-flow.js"
+    "test-auth": "node test-auth-flow.js",
+    "test-matchmaking": "node test-matchmaking-flow.js"
   }
 }

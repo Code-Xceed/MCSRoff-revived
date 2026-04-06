@@ -2,10 +2,12 @@ package com.codex.mcsroff.auth;
 
 import com.codex.mcsroff.McsroffMod;
 import com.codex.mcsroff.config.ModConfig;
+import com.codex.mcsroff.net.HttpRequestException;
 import com.codex.mcsroff.net.WebAuthApi;
 
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 
 public final class AccountManager {
     private final WebAuthApi webAuthApi;
@@ -22,6 +24,15 @@ public final class AccountManager {
 
     public boolean hasTrustedSession() {
         return this.currentSession != null && this.currentSession.isUsable();
+    }
+
+    public <T> CompletableFuture<T> executeAuthenticated(AuthenticatedAction<T> action) {
+        return ensureActiveSession().thenCompose(session -> {
+            if (session == null) {
+                return failedFuture(new IllegalStateException("Trusted account session missing"));
+            }
+            return executeWithRetry(action, session, true);
+        });
     }
 
     public CompletableFuture<AuthSession> bootstrapSession() {
@@ -112,6 +123,91 @@ public final class AccountManager {
             return CompletableFuture.completedFuture(null);
         }
         return this.webAuthApi.refreshSession(cached.getRefreshToken());
+    }
+
+    private CompletableFuture<AuthSession> ensureActiveSession() {
+        AuthSession session = this.currentSession != null ? this.currentSession : loadCachedSession();
+        if (session == null) {
+            return CompletableFuture.completedFuture(null);
+        }
+        if (session.isUsable()) {
+            return CompletableFuture.completedFuture(session);
+        }
+        return refreshCachedSession(session).handle((refreshed, throwable) -> {
+            if (throwable != null || refreshed == null) {
+                this.currentSession = null;
+                clearPersistedSessionQuietly();
+                return null;
+            }
+            persistSession(refreshed);
+            return refreshed;
+        });
+    }
+
+    private <T> CompletableFuture<T> executeWithRetry(AuthenticatedAction<T> action, AuthSession session, boolean allowRefreshRetry) {
+        CompletableFuture<T> actionFuture;
+        try {
+            actionFuture = action.run(session);
+        } catch (Exception exception) {
+            return failedFuture(exception);
+        }
+
+        CompletableFuture<T> resultFuture = new CompletableFuture<T>();
+        actionFuture.whenComplete((result, throwable) -> {
+            if (throwable == null) {
+                resultFuture.complete(result);
+                return;
+            }
+
+            Throwable cause = unwrap(throwable);
+            if (!allowRefreshRetry || !isUnauthorized(cause) || session.getRefreshToken() == null || session.getRefreshToken().isEmpty()) {
+                resultFuture.completeExceptionally(cause);
+                return;
+            }
+
+            refreshCachedSession(session).whenComplete((refreshed, refreshThrowable) -> {
+                if (refreshThrowable != null || refreshed == null) {
+                    this.currentSession = null;
+                    clearPersistedSessionQuietly();
+                    Throwable finalCause = refreshThrowable == null ? cause : unwrap(refreshThrowable);
+                    resultFuture.completeExceptionally(finalCause);
+                    return;
+                }
+
+                persistSession(refreshed);
+                executeWithRetry(action, refreshed, false).whenComplete((retryResult, retryThrowable) -> {
+                    if (retryThrowable != null) {
+                        resultFuture.completeExceptionally(unwrap(retryThrowable));
+                        return;
+                    }
+                    resultFuture.complete(retryResult);
+                });
+            });
+        });
+        return resultFuture;
+    }
+
+    private static boolean isUnauthorized(Throwable throwable) {
+        return throwable instanceof HttpRequestException
+                && ((((HttpRequestException) throwable).getStatusCode() == 401)
+                || (((HttpRequestException) throwable).getStatusCode() == 403));
+    }
+
+    private static Throwable unwrap(Throwable throwable) {
+        Throwable current = throwable;
+        while (current instanceof CompletionException && current.getCause() != null) {
+            current = current.getCause();
+        }
+        while (current.getCause() != null && current.getCause() != current) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    private static <T> CompletableFuture<T> failedFuture(Throwable throwable) {
+        CompletableFuture<T> future = new CompletableFuture<T>();
+        future.completeExceptionally(throwable);
+        return future;
     }
 
     private void clearPersistedSessionQuietly() {

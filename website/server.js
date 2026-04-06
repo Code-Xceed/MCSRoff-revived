@@ -23,7 +23,9 @@ const TABLES = {
   users: path.join(DATA_DIR, 'users.json'),
   webSessions: path.join(DATA_DIR, 'web_sessions.json'),
   deviceLinks: path.join(DATA_DIR, 'device_links.json'),
-  modSessions: path.join(DATA_DIR, 'mod_sessions.json')
+  modSessions: path.join(DATA_DIR, 'mod_sessions.json'),
+  queueEntries: path.join(DATA_DIR, 'queue_entries.json'),
+  matches: path.join(DATA_DIR, 'matches.json')
 };
 
 ensureStorage();
@@ -79,6 +81,9 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'GET' && requestUrl.pathname === '/mod-auth/me') {
       return handleMe(request, response);
+    }
+    if (request.method === 'POST' && requestUrl.pathname === '/matchmaker') {
+      return handleMatchmaker(request, response);
     }
 
     sendHtml(response, 404, renderPage('Not Found', `
@@ -514,6 +519,163 @@ async function handleMe(request, response) {
   sendJson(response, 200, publicUser(user));
 }
 
+async function handleMatchmaker(request, response) {
+  const modSession = getModSessionFromBearer(request);
+  if (!modSession) {
+    return sendJson(response, 401, { error: 'Unauthorized' });
+  }
+
+  const user = findUserById(loadTable('users'), modSession.userId);
+  if (!user || user.status !== 'active') {
+    return sendJson(response, 403, { error: 'Account inactive' });
+  }
+
+  cleanupMatchmakerState();
+
+  const body = await readBody(request);
+  const action = typeof body.action === 'string' ? body.action.trim() : '';
+  if (!action) {
+    return sendJson(response, 400, { error: 'action is required' });
+  }
+
+  if (action === 'join_queue') {
+    return handleJoinQueue(response, user, body);
+  }
+  if (action === 'poll_match') {
+    return handlePollMatch(response, user, body);
+  }
+  if (action === 'cancel_queue') {
+    return handleCancelQueue(response, user);
+  }
+  if (action === 'mark_world_generated') {
+    return handleMarkWorldGenerated(response, user, body);
+  }
+  if (action === 'mark_ready') {
+    return handleMarkReady(response, user, body);
+  }
+
+  return sendJson(response, 400, { error: 'Unknown action' });
+}
+
+async function handleJoinQueue(response, user, body) {
+  const activeMatch = findActiveMatchForUser(user.id);
+  if (activeMatch) {
+    persistMatchState(activeMatch);
+    return sendJson(response, 200, buildSnapshotResponse('matched', activeMatch));
+  }
+
+  const seedMode = normalizeSeedMode(body.seed_mode);
+  const filterIds = sanitizeFilterIds(body.filter_ids);
+  if (filterIds.length === 0) {
+    return sendJson(response, 400, { error: 'At least one filter id is required' });
+  }
+
+  const queueEntries = loadTable('queueEntries');
+  const existingQueueEntry = queueEntries.find((entry) => entry.playerId === user.id && entry.status === 'searching');
+  const ownQueueEntry = {
+    id: existingQueueEntry ? existingQueueEntry.id : crypto.randomUUID(),
+    playerId: user.id,
+    username: user.username,
+    displayName: user.displayName,
+    elo: user.elo,
+    rankTier: user.rankTier,
+    seedMode,
+    seedTypeLabel: sanitizeDisplayText(body.seed_type_label, 48) || 'Random FSG Race Pool',
+    filterIds,
+    status: 'searching',
+    claimedMatchId: '',
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    expiresAt: Date.now() + (2 * 60 * 1000)
+  };
+
+  const opponentQueue = findCompatibleQueueEntry(queueEntries.filter((entry) => entry.playerId !== user.id), ownQueueEntry);
+  if (!opponentQueue) {
+    const nextQueueEntries = queueEntries.filter((entry) => entry.playerId !== user.id);
+    nextQueueEntries.push(ownQueueEntry);
+    saveTable('queueEntries', nextQueueEntries);
+    return sendJson(response, 200, { queue_status: 'searching' });
+  }
+
+  const seedAssignment = await fetchFsgSeed(seedMode, intersectFilters(ownQueueEntry.filterIds, opponentQueue.filterIds));
+  const match = createMatchFromQueue(ownQueueEntry, opponentQueue, seedAssignment);
+  const remainingQueue = queueEntries.filter((entry) => entry.playerId !== opponentQueue.playerId);
+  saveTable('queueEntries', remainingQueue);
+  appendMatch(match);
+  return sendJson(response, 200, buildSnapshotResponse('matched', match));
+}
+
+function handlePollMatch(response, user, body) {
+  let match = null;
+  const requestedMatchId = typeof body.match_id === 'string' ? body.match_id.trim() : '';
+  if (requestedMatchId) {
+    match = findMatchById(requestedMatchId);
+  }
+  if (!match) {
+    match = findActiveMatchForUser(user.id);
+  }
+  if (!match) {
+    return sendJson(response, 200, { queue_status: 'searching' });
+  }
+
+  persistMatchState(match);
+  return sendJson(response, 200, buildSnapshotResponse('matched', match));
+}
+
+function handleCancelQueue(response, user) {
+  const queueEntries = loadTable('queueEntries').filter((entry) => entry.playerId !== user.id);
+  saveTable('queueEntries', queueEntries);
+
+  const match = findActiveMatchForUser(user.id);
+  if (match && match.state !== 'running' && match.state !== 'finished') {
+    match.state = 'aborted';
+    match.abortReason = 'player_cancelled';
+    match.updatedAt = Date.now();
+    const player = findMatchPlayer(match, user.id);
+    if (player) {
+      player.connected = false;
+      player.worldStatus = 'disconnected';
+      player.updatedAt = Date.now();
+    }
+    persistMatchState(match);
+  }
+
+  return sendJson(response, 200, { queue_status: 'cancelled' });
+}
+
+function handleMarkWorldGenerated(response, user, body) {
+  const match = requireOwnedMatch(user.id, body.match_id);
+  if (!match) {
+    return sendJson(response, 404, { error: 'Match not found' });
+  }
+
+  const player = findMatchPlayer(match, user.id);
+  player.worldStatus = 'generated';
+  player.updatedAt = Date.now();
+  updateMatchStateFromPlayers(match);
+  persistMatchState(match);
+  return sendJson(response, 200, buildSnapshotResponse('matched', match));
+}
+
+function handleMarkReady(response, user, body) {
+  const match = requireOwnedMatch(user.id, body.match_id);
+  if (!match) {
+    return sendJson(response, 404, { error: 'Match not found' });
+  }
+
+  const player = findMatchPlayer(match, user.id);
+  player.worldStatus = 'ready';
+  player.readyAt = Date.now();
+  player.updatedAt = Date.now();
+  updateMatchStateFromPlayers(match);
+  if (allPlayersAtLeast(match, 'ready') && !match.countdownTargetEpochMillis) {
+    match.state = 'countdown';
+    match.countdownTargetEpochMillis = Date.now() + 10000;
+  }
+  persistMatchState(match);
+  return sendJson(response, 200, buildSnapshotResponse('matched', match));
+}
+
 function renderLinkDecisionForms(deviceLink) {
   if (!deviceLink || deviceLink.status !== 'pending' || deviceLink.expiresAt <= Date.now()) {
     return '';
@@ -660,17 +822,24 @@ function getModSessionFromBearer(request) {
 }
 
 function issueModSession(userId, scope) {
-  const modSessions = loadTable('modSessions').filter((session) => !session.revokedAt && session.refreshExpiresAt > Date.now());
+  const now = Date.now();
+  const modSessions = loadTable('modSessions').filter((session) => session.refreshExpiresAt > now);
+  modSessions.forEach((session) => {
+    if (!session.revokedAt && session.userId === userId && session.scope === scope) {
+      session.revokedAt = now;
+      session.updatedAt = now;
+    }
+  });
   const session = {
     id: crypto.randomUUID(),
     userId,
     scope,
     accessToken: `acc_${crypto.randomBytes(24).toString('hex')}`,
     refreshToken: `ref_${crypto.randomBytes(32).toString('hex')}`,
-    accessExpiresAt: Date.now() + (ACCESS_TOKEN_TTL_SECONDS * 1000),
-    refreshExpiresAt: Date.now() + (REFRESH_TOKEN_TTL_SECONDS * 1000),
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
+    accessExpiresAt: now + (ACCESS_TOKEN_TTL_SECONDS * 1000),
+    refreshExpiresAt: now + (REFRESH_TOKEN_TTL_SECONDS * 1000),
+    createdAt: now,
+    updatedAt: now,
     revokedAt: null
   };
   modSessions.push(session);
@@ -691,6 +860,294 @@ function getActiveDeviceLinksForUser(userId) {
     .filter((item) => item.approvedUserId === userId || item.status === 'pending')
     .sort((left, right) => right.createdAt - left.createdAt)
     .slice(0, 6);
+}
+
+function findCompatibleQueueEntry(queueEntries, requestedEntry) {
+  return queueEntries
+    .filter((entry) =>
+      entry.status === 'searching'
+      && entry.expiresAt > Date.now()
+      && entry.seedMode === requestedEntry.seedMode
+      && intersectFilters(entry.filterIds, requestedEntry.filterIds).length > 0
+    )
+    .sort((left, right) => left.createdAt - right.createdAt)[0] || null;
+}
+
+function intersectFilters(left, right) {
+  const rightSet = new Set((right || []).map((value) => String(value)));
+  return (left || []).filter((value) => rightSet.has(String(value)));
+}
+
+function sanitizeFilterIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const ids = [];
+  for (const item of value) {
+    const text = sanitizeDisplayText(item, 32);
+    if (!text || seen.has(text)) {
+      continue;
+    }
+    seen.add(text);
+    ids.push(text);
+  }
+  return ids;
+}
+
+function normalizeSeedMode(value) {
+  return String(value || '').toUpperCase() === 'PRACTICE' ? 'PRACTICE' : 'MATCH';
+}
+
+function createMatchFromQueue(hostEntry, opponentEntry, seedAssignment) {
+  const now = Date.now();
+  return {
+    id: crypto.randomUUID(),
+    state: 'matched',
+    seedMode: hostEntry.seedMode,
+    seedTypeLabel: hostEntry.seedTypeLabel,
+    filterIds: intersectFilters(hostEntry.filterIds, opponentEntry.filterIds),
+    seed: String(seedAssignment.seed || ''),
+    fsgFilterId: String(seedAssignment.filterId || ''),
+    fsgToken: String(seedAssignment.token || ''),
+    countdownTargetEpochMillis: 0,
+    abortReason: '',
+    winnerPlayerId: '',
+    createdAt: now,
+    updatedAt: now,
+    players: [
+      createMatchPlayer(hostEntry, 'host', now),
+      createMatchPlayer(opponentEntry, 'opponent', now)
+    ]
+  };
+}
+
+function createMatchPlayer(queueEntry, slot, now) {
+  return {
+    playerId: queueEntry.playerId,
+    username: queueEntry.username,
+    displayName: queueEntry.displayName,
+    eloSnapshot: queueEntry.elo,
+    rankSnapshot: queueEntry.rankTier,
+    slot,
+    connected: true,
+    worldStatus: 'queued',
+    readyAt: 0,
+    finishedAt: 0,
+    finishTimeMs: 0,
+    result: '',
+    createdAt: now,
+    updatedAt: now
+  };
+}
+
+function appendMatch(match) {
+  const matches = loadTable('matches');
+  matches.push(match);
+  saveTable('matches', matches);
+}
+
+function findMatchById(matchId) {
+  if (!matchId) {
+    return null;
+  }
+  const matches = loadTable('matches');
+  return matches.find((match) => match.id === matchId) || null;
+}
+
+function findActiveMatchForUser(userId) {
+  const matches = loadTable('matches');
+  const activeStates = new Set(['matched', 'world_generating', 'world_generated', 'countdown', 'running']);
+  return matches.find((match) =>
+    activeStates.has(match.state)
+    && Array.isArray(match.players)
+    && match.players.some((player) => player.playerId === userId)
+  ) || null;
+}
+
+function findMatchPlayer(match, userId) {
+  return Array.isArray(match.players)
+    ? match.players.find((player) => player.playerId === userId) || null
+    : null;
+}
+
+function requireOwnedMatch(userId, matchId) {
+  const match = findMatchById(typeof matchId === 'string' ? matchId.trim() : '');
+  if (!match) {
+    return null;
+  }
+  return findMatchPlayer(match, userId) ? match : null;
+}
+
+function updateMatchStateFromPlayers(match) {
+  normalizeCountdownState(match);
+  if (match.state === 'aborted' || match.state === 'finished' || match.state === 'running' || match.state === 'countdown') {
+    return;
+  }
+  if (allPlayersAtLeast(match, 'ready')) {
+    match.state = 'world_generated';
+    return;
+  }
+  if (allPlayersAtLeast(match, 'generated')) {
+    match.state = 'world_generated';
+    return;
+  }
+  if (anyPlayerAtLeast(match, 'generated')) {
+    match.state = 'world_generating';
+    return;
+  }
+  match.state = 'matched';
+}
+
+function normalizeCountdownState(match) {
+  if (match.state === 'countdown' && match.countdownTargetEpochMillis > 0 && Date.now() >= match.countdownTargetEpochMillis) {
+    match.state = 'running';
+    match.updatedAt = Date.now();
+    if (Array.isArray(match.players)) {
+      match.players.forEach((player) => {
+        if (player.worldStatus === 'ready') {
+          player.worldStatus = 'running';
+          player.updatedAt = Date.now();
+        }
+      });
+    }
+  }
+}
+
+function anyPlayerAtLeast(match, targetStatus) {
+  const targetStage = worldStage(targetStatus);
+  return Array.isArray(match.players) && match.players.some((player) => worldStage(player.worldStatus) >= targetStage);
+}
+
+function allPlayersAtLeast(match, targetStatus) {
+  const targetStage = worldStage(targetStatus);
+  return Array.isArray(match.players)
+    && match.players.length === 2
+    && match.players.every((player) => worldStage(player.worldStatus) >= targetStage);
+}
+
+function worldStage(status) {
+  if (status === 'ready') {
+    return 3;
+  }
+  if (status === 'generated') {
+    return 2;
+  }
+  if (status === 'generating') {
+    return 1;
+  }
+  if (status === 'running') {
+    return 4;
+  }
+  if (status === 'finished') {
+    return 5;
+  }
+  return 0;
+}
+
+function persistMatchState(match) {
+  normalizeCountdownState(match);
+  updateMatchStateFromPlayers(match);
+  match.updatedAt = Date.now();
+  const matches = loadTable('matches');
+  const index = matches.findIndex((item) => item.id === match.id);
+  if (index >= 0) {
+    matches[index] = match;
+    saveTable('matches', matches);
+  }
+}
+
+function cleanupMatchmakerState() {
+  const now = Date.now();
+  const queueEntries = loadTable('queueEntries').filter((entry) => entry.expiresAt > now && entry.status === 'searching');
+  saveTable('queueEntries', queueEntries);
+
+  const matches = loadTable('matches');
+  let changed = false;
+  for (const match of matches) {
+    const previousState = match.state;
+    normalizeCountdownState(match);
+    if (match.state !== previousState) {
+      match.updatedAt = now;
+      changed = true;
+    }
+  }
+  if (changed) {
+    saveTable('matches', matches);
+  }
+}
+
+function buildSnapshotResponse(queueStatus, match) {
+  if (!match) {
+    return { queue_status: queueStatus };
+  }
+
+  return {
+    queue_status: queueStatus,
+    match: {
+      id: match.id,
+      state: match.state,
+      seed_mode: match.seedMode,
+      seed_type_label: match.seedTypeLabel,
+      seed: match.seed,
+      fsg_filter_id: match.fsgFilterId,
+      fsg_token: match.fsgToken,
+      countdown_target_epoch_millis: match.countdownTargetEpochMillis || 0,
+      players: (match.players || []).map((player) => ({
+        player_id: player.playerId,
+        username: player.username,
+        display_name: player.displayName,
+        elo_snapshot: player.eloSnapshot,
+        rank_snapshot: player.rankSnapshot,
+        slot: player.slot,
+        world_status: player.worldStatus,
+        connected: player.connected !== false
+      }))
+    }
+  };
+}
+
+async function fetchFsgSeed(seedMode, filterIds) {
+  const usableFilters = filterIds && filterIds.length > 0 ? filterIds : ['zsg'];
+  if (seedMode === 'PRACTICE') {
+    const selectedFilter = usableFilters[Math.floor(Math.random() * usableFilters.length)];
+    const response = await fetch(`https://www.filteredseed.com/getRandomUsedSeed/${encodeURIComponent(selectedFilter)}`);
+    if (!response.ok) {
+      throw new Error(`FSG practice seed failed with HTTP ${response.status}`);
+    }
+    const body = await response.json();
+    return {
+      seed: body.seed || (body.data && body.data.seed) || '',
+      filterId: selectedFilter,
+      token: ''
+    };
+  }
+
+  let url = '';
+  if (usableFilters.length === 1) {
+    url = `https://www.filteredseed.com/getSeed/${encodeURIComponent(usableFilters[0])}`;
+  } else {
+    const params = new URLSearchParams();
+    usableFilters.forEach((filterId) => params.append('filters', filterId));
+    url = `https://www.filteredseed.com/getSeedRandomFilter?${params.toString()}`;
+  }
+
+  const response = await fetch(url, {
+    headers: {
+      'Accept': 'application/json',
+      'User-Agent': 'Mozilla/5.0'
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`FSG seed failed with HTTP ${response.status}`);
+  }
+  const body = await response.json();
+  const payload = body && body.data ? body.data : body;
+  return {
+    seed: payload.seed || '',
+    filterId: payload.filter || usableFilters[0],
+    token: payload.token || ''
+  };
 }
 
 function findUserById(users, userId) {

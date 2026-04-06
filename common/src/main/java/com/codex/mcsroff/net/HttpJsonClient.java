@@ -39,7 +39,7 @@ final class HttpJsonClient {
         String body = readFully(stream);
 
         if (status < 200 || status >= 300) {
-            throw new IOException("HTTP " + status + " for " + url + ": " + body);
+            throw new HttpRequestException(status, url, body);
         }
 
         return new JsonParser().parse(body).getAsJsonObject();
@@ -70,7 +70,7 @@ final class HttpJsonClient {
         String responseBody = readFully(stream);
 
         if (status < 200 || status >= 300) {
-            throw new IOException("HTTP " + status + " for " + url + ": " + responseBody);
+            throw new HttpRequestException(status, url, responseBody);
         }
 
         return responseBody.isEmpty() ? new JsonObject() : new JsonParser().parse(responseBody).getAsJsonObject();
@@ -78,8 +78,10 @@ final class HttpJsonClient {
 
     static Map<String, String> headersWithApiKey(String apiKey) {
         Map<String, String> headers = new HashMap<String, String>(defaultHeaders());
-        headers.put("apikey", apiKey);
-        headers.put("Authorization", "Bearer " + apiKey);
+        if (apiKey != null && !apiKey.trim().isEmpty()) {
+            headers.put("apikey", apiKey);
+            headers.put("Authorization", "Bearer " + apiKey);
+        }
         return headers;
     }
 
