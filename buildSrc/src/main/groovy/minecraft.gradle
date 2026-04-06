@@ -1,0 +1,42 @@
+plugins {
+    id 'common'
+    id 'xyz.wagyourtail.unimined'
+}
+
+unimined.minecraft(sourceSets.main, true) {
+    version gradle.ext.minecraft_version
+
+    mappings {
+        mojmap()
+
+        stubs(["searge", "mojmap"]) {
+            c(["net/minecraft/client/gui/widget/Widget", "net/minecraft/client/gui/widget/Widget"]) {
+                m(["func_238483_d_;()I", "getHeightForge"])
+            }
+        }
+    }
+}
+
+if (project.name == "common") return // Don't apply the code below to the common project
+
+unimined.minecraft(sourceSets.main, true) {
+    mods.modImplementation {
+        mixinRemap {
+            reset()
+            enableBaseMixin()
+            enableMixinExtra()
+        }
+    }
+}
+
+dependencies {
+    implementation(project(":common"))
+}
+
+processResources {
+    from project(":common").sourceSets.main.resources
+}
+
+tasks.withType(JavaCompile).configureEach {
+    source(project(":common").sourceSets.main.allSource)
+}
