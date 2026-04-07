@@ -14,6 +14,7 @@ import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.network.chat.TextComponent;
+import net.minecraft.network.chat.TranslatableComponent;
 import net.minecraft.resources.ResourceKey;
 import net.minecraft.world.level.Level;
 
@@ -91,19 +92,20 @@ public final class TelemetryManager {
         String opponentLine = opponent != null ? opponent.getName() : "Opponent";
         String statusLine = this.opponentStatus == null || this.opponentStatus.isEmpty() ? "Started Match" : this.opponentStatus;
 
-        int right = minecraft.getWindow().getGuiScaledWidth() - 6;
-        int y = 8;
+        int guiHeight = minecraft.getWindow().getGuiScaledHeight();
+        int right = minecraft.getWindow().getGuiScaledWidth() - 8;
+        int y = Math.max(18, (guiHeight / 2) - 42);
         drawRightAligned(font, poseStack, title, right, y, 0xFFE9D35B, true);
         drawRightAligned(font, poseStack, mode, right, y + 12, 0xFFFFFFFF, true);
         drawRightAligned(font, poseStack, opponentLine, right, y + 24, 0xFF75C7FF, true);
         drawRightAligned(font, poseStack, statusLine, right, y + 36, 0xFFC9B6FF, true);
     }
 
-    public void recordAwardedAdvancement(String advancementId, String title) {
+    public void recordAwardedAdvancement(String advancementId, String frameType, String title) {
         if (advancementId == null || advancementId.isEmpty() || title == null || title.isEmpty()) {
             return;
         }
-        this.pendingAdvancements.add(new LocalAdvancementUpdate(advancementId, title));
+        this.pendingAdvancements.add(new LocalAdvancementUpdate(advancementId, normalizeAdvancementFrame(frameType), title));
     }
 
     private void flushLocalSignals(Minecraft minecraft, MatchSession session) {
@@ -133,7 +135,7 @@ public final class TelemetryManager {
                 return;
             }
             String statusText = mapStatusFromAdvancement(update.getAdvancementId());
-            reportActivity(session, "advancement", update.getAdvancementId(), statusText, update.getTitle(), update.getAdvancementId());
+            reportActivity(session, "advancement:" + update.getFrameType(), update.getAdvancementId(), statusText, update.getTitle(), update.getAdvancementId());
         }
     }
 
@@ -261,24 +263,29 @@ public final class TelemetryManager {
             if (localUserId.equals(event.getPlayerId())) {
                 continue;
             }
-            if ("advancement".equalsIgnoreCase(event.getType()) && event.getChatMessage() != null && !event.getChatMessage().isEmpty()) {
-                appendOpponentAdvancementToChat(minecraft, session, event.getChatMessage());
+            if (isAdvancementEvent(event) && event.getChatMessage() != null && !event.getChatMessage().isEmpty()) {
+                appendOpponentAdvancementToChat(minecraft, session, event);
             }
         }
 
         this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
-    private void appendOpponentAdvancementToChat(Minecraft minecraft, MatchSession session, String chatMessage) {
+    private void appendOpponentAdvancementToChat(Minecraft minecraft, MatchSession session, RemoteMatchEvent event) {
         if (minecraft.gui == null || minecraft.gui.getChat() == null) {
             return;
         }
 
         MatchOpponent opponent = session.getOpponent();
-        String prefix = opponent != null && opponent.getName() != null && !opponent.getName().isEmpty()
-                ? opponent.getName() + ": "
-                : "Opponent: ";
-        MutableComponent message = new TextComponent(prefix + chatMessage).withStyle(ChatFormatting.GRAY);
+        String opponentName = opponent != null && opponent.getName() != null && !opponent.getName().isEmpty()
+                ? opponent.getName()
+                : "Opponent";
+        String frameType = extractAdvancementFrameType(event.getType());
+        MutableComponent message = new TranslatableComponent(
+                "chat.type.advancement." + frameType,
+                new TextComponent(opponentName),
+                new TextComponent(event.getChatMessage())
+        ).withStyle(ChatFormatting.GRAY);
         minecraft.gui.getChat().addMessage(message);
     }
 
@@ -343,6 +350,33 @@ public final class TelemetryManager {
             return "Completed";
         }
         return "";
+    }
+
+    private static boolean isAdvancementEvent(RemoteMatchEvent event) {
+        return event != null
+                && event.getType() != null
+                && event.getType().toLowerCase().startsWith("advancement");
+    }
+
+    private static String extractAdvancementFrameType(String type) {
+        if (type == null) {
+            return "task";
+        }
+        int separatorIndex = type.indexOf(':');
+        if (separatorIndex < 0 || separatorIndex >= type.length() - 1) {
+            return "task";
+        }
+        return normalizeAdvancementFrame(type.substring(separatorIndex + 1));
+    }
+
+    private static String normalizeAdvancementFrame(String frameType) {
+        if ("challenge".equalsIgnoreCase(frameType)) {
+            return "challenge";
+        }
+        if ("goal".equalsIgnoreCase(frameType)) {
+            return "goal";
+        }
+        return "task";
     }
 
     private static void drawRightAligned(Font font, PoseStack poseStack, String text, int rightX, int y, int color, boolean shadow) {
