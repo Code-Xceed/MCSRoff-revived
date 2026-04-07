@@ -108,6 +108,14 @@ async function main() {
     assert.strictEqual(requeueSnapshot.queue_status, 'searching', 'requeue should not revive the previous opponent');
     assert(!requeueSnapshot.match, 'requeue unexpectedly returned the previous active match');
 
+    const cancelledMatch = await createMatchedPair(playerOne, playerTwo);
+    const cancelResponse = await matchmaker(playerOne.accessToken, {
+      action: 'cancel_queue'
+    });
+    assert.strictEqual(cancelResponse.queue_status, 'cancelled', 'cancel queue should acknowledge cancellation');
+    const cancelledView = await waitForMatchState(playerTwo.accessToken, cancelledMatch.matchId, 'aborted', 5000);
+    assert.strictEqual(cancelledView.match.abort_reason, 'player_cancelled', 'opponent should see player_cancelled abort reason');
+
     console.log('Matchmaking flow passed.');
     console.log(`Match ID: ${finishSnapshot.match.id}`);
     console.log(`Seed: ${finishSnapshot.match.seed}`);
@@ -196,6 +204,35 @@ async function waitForMatchState(accessToken, matchId, expectedState, timeoutMil
 }
 
 async function startRunningMatch(playerOne, playerTwo) {
+  const matchedPair = await createMatchedPair(playerOne, playerTwo);
+  const joinTwo = matchedPair.matchSnapshot;
+
+  await matchmaker(playerOne.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
+  const afterOneGenerated = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
+  await matchmaker(playerTwo.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
+  const beforeCountdown = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
+  assert.strictEqual(beforeCountdown.match.state, 'world_generated', 'countdown should not start until both ready');
+
+  const readySnapshots = await Promise.all([
+    matchmaker(playerOne.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id }),
+    matchmaker(playerTwo.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id })
+  ]);
+  const finalSnapshot = readySnapshots.find((snapshot) =>
+    snapshot.match && snapshot.match.state === 'countdown' && snapshot.match.countdown_target_epoch_millis > Date.now()
+  ) || await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'countdown', 5000);
+  assert.strictEqual(finalSnapshot.match.state, 'countdown', 'countdown did not start after both ready');
+  assert(finalSnapshot.match.countdown_target_epoch_millis > Date.now(), 'countdown target missing or invalid');
+
+  const runningSnapshot = await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'running', 15000);
+  return {
+    matchId: joinTwo.match.id,
+    seed: joinTwo.match.seed,
+    afterOneGenerated,
+    runningSnapshot
+  };
+}
+
+async function createMatchedPair(playerOne, playerTwo) {
   const joinOne = await matchmaker(playerOne.accessToken, {
     action: 'join_queue',
     seed_mode: 'MATCH',
@@ -238,29 +275,10 @@ async function startRunningMatch(playerOne, playerTwo) {
   });
   assert.strictEqual(pollOne.match.id, joinTwo.match.id, 'both players should see same match id');
   assert.strictEqual(pollOne.match.seed, joinTwo.match.seed, 'both players should see same shared seed');
-
-  await matchmaker(playerOne.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
-  const afterOneGenerated = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
-  await matchmaker(playerTwo.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
-  const beforeCountdown = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
-  assert.strictEqual(beforeCountdown.match.state, 'world_generated', 'countdown should not start until both ready');
-
-  const readySnapshots = await Promise.all([
-    matchmaker(playerOne.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id }),
-    matchmaker(playerTwo.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id })
-  ]);
-  const finalSnapshot = readySnapshots.find((snapshot) =>
-    snapshot.match && snapshot.match.state === 'countdown' && snapshot.match.countdown_target_epoch_millis > Date.now()
-  ) || await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'countdown', 5000);
-  assert.strictEqual(finalSnapshot.match.state, 'countdown', 'countdown did not start after both ready');
-  assert(finalSnapshot.match.countdown_target_epoch_millis > Date.now(), 'countdown target missing or invalid');
-
-  const runningSnapshot = await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'running', 15000);
   return {
     matchId: joinTwo.match.id,
     seed: joinTwo.match.seed,
-    afterOneGenerated,
-    runningSnapshot
+    matchSnapshot: joinTwo
   };
 }
 

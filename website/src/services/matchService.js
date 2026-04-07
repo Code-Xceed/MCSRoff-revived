@@ -230,6 +230,7 @@ function createMatchService(options) {
 
   async function cleanupMatchmakerState() {
     const now = Date.now();
+    const changedMatches = [];
     await repositories.queueEntries.pruneSearchingExpiredOrStale(now, matchPlayerStaleMillis);
 
     const matches = await repositories.matches.getAll();
@@ -251,7 +252,10 @@ function createMatchService(options) {
         changed = true;
       }
       if (changed) {
-        await repositories.matches.update(match);
+        const updatedMatch = await repositories.matches.update(match);
+        if (updatedMatch) {
+          changedMatches.push(updatedMatch);
+        }
       }
     }
 
@@ -272,6 +276,7 @@ function createMatchService(options) {
     if (staleClaimedPlayerIds.length > 0) {
       await repositories.queueEntries.removeByPlayerIds(staleClaimedPlayerIds);
     }
+    return changedMatches;
   }
 
   function buildSnapshotResponse(queueStatus, match) {

@@ -40,7 +40,7 @@ function createMatchmakingController(options) {
       return sendJson(response, 403, { error: 'Account inactive' });
     }
 
-    await cleanupMatchmakerState();
+    publishResolvedMatches(await cleanupMatchmakerState());
 
     const body = await readBody(request);
     const action = typeof body.action === 'string' ? body.action.trim() : '';
@@ -90,7 +90,7 @@ function createMatchmakingController(options) {
       return sendJson(response, 403, { error: 'Account inactive' });
     }
 
-    await cleanupMatchmakerState();
+    publishResolvedMatches(await cleanupMatchmakerState());
 
     const requestUrl = new URL(request.url, 'http://localhost');
     const requestedMatchId = typeof requestUrl.searchParams.get('match_id') === 'string'
@@ -262,7 +262,7 @@ function createMatchmakingController(options) {
   async function handleCancelQueue(response, user) {
     await repositories.queueEntries.removeByPlayerIds([user.id]);
 
-    const match = await findActiveMatchForUser(user.id);
+    let match = await findActiveMatchForUser(user.id);
     if (match && match.state !== 'running' && match.state !== 'finished') {
       match.state = 'aborted';
       match.abortReason = 'player_cancelled';
@@ -274,6 +274,7 @@ function createMatchmakingController(options) {
         player.updatedAt = Date.now();
       }
       match = await persistMatchState(match);
+      publishResolvedMatches([match]);
     }
 
     await repositories.auditLogs.insert(createAuditLogEntry(
@@ -478,6 +479,18 @@ function createMatchmakingController(options) {
       matchStreamHub.publish(match.id, payload);
     }
     return sendJson(response, 200, payload);
+  }
+
+  function publishResolvedMatches(matches) {
+    if (!Array.isArray(matches) || matches.length === 0) {
+      return;
+    }
+    for (const match of matches) {
+      if (!match || !match.id) {
+        continue;
+      }
+      matchStreamHub.publish(match.id, buildSnapshotResponse('matched', match));
+    }
   }
 
   return {
