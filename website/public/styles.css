@@ -158,7 +158,8 @@ label {
 
 input[type="text"],
 input[type="password"],
-input[type="search"] {
+input[type="search"],
+select {
   width: 100%;
   background: var(--field);
   border: 2px solid #302a26;
@@ -215,6 +216,22 @@ input[type="search"] {
   flex-wrap: wrap;
 }
 
+.admin-user-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 14px;
+  background: rgba(39, 34, 30, 0.92);
+  border: 1px solid #3c342d;
+}
+
+.admin-user-meta {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
 .pill {
   display: inline-block;
   padding: 6px 10px;
@@ -263,5 +280,9 @@ input[type="search"] {
   .stat-row {
     flex-direction: column;
     gap: 4px;
+  }
+
+  .admin-user-row {
+    flex-direction: column;
   }
 }

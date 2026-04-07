@@ -54,7 +54,11 @@ function createAuthService(options) {
     if (!session) {
       return null;
     }
-    return repositories.users.findById(session.userId);
+    const user = await repositories.users.findById(session.userId);
+    if (!user || user.status !== 'active') {
+      return null;
+    }
+    return user;
   }
 
   async function createWebSession(userId) {

@@ -29,6 +29,13 @@ cd website
 npm run test-auth
 ```
 
+Smoke-test admin moderation and forced session revocation:
+
+```powershell
+cd website
+npm run test-admin
+```
+
 Smoke-test the full match lifecycle with a deterministic local FSG seed:
 
 ```powershell
@@ -61,6 +68,7 @@ Rate-limit knobs can be overridden in `website/.env`:
 - `MATCH_RATE_LIMIT_MAX`
 - `PAGE_RATE_LIMIT_WINDOW_MS`
 - `PAGE_RATE_LIMIT_MAX`
+- `ADMIN_USERNAMES`
 
 ## Mod Defaults
 
@@ -80,6 +88,7 @@ Website pages:
 - `/login`
 - `/dashboard`
 - `/link`
+- `/admin`
 
 Mod auth API:
 

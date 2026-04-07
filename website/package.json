@@ -7,6 +7,7 @@
     "start": "node server.js",
     "check": "node --check server.js",
     "test-auth": "node test-auth-flow.js",
+    "test-admin": "node test-admin-flow.js",
     "test-matchmaking": "node test-matchmaking-flow.js",
     "export-runtime-sql": "node scripts/exportRuntimeSql.js",
     "validate-postgres-runtime": "node scripts/validatePostgresRuntime.js"

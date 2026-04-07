@@ -7,13 +7,18 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 
-const BASE_URL = process.env.MCSR_AUTH_BASE_URL || 'http://127.0.0.1:8080';
 const USE_EXTERNAL_SERVER = process.env.MCSR_AUTH_EXTERNAL === '1';
+let runtimeBaseUrl = process.env.MCSR_AUTH_BASE_URL || 'http://127.0.0.1:8080';
 
 async function main() {
+  const port = USE_EXTERNAL_SERVER ? null : (19200 + Math.floor(Math.random() * 500));
+  runtimeBaseUrl = USE_EXTERNAL_SERVER ? runtimeBaseUrl : `http://127.0.0.1:${port}`;
   const server = USE_EXTERNAL_SERVER ? null : spawn(process.execPath, ['server.js'], {
     cwd: __dirname,
     env: Object.assign({}, process.env, {
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      BASE_URL: runtimeBaseUrl,
       FSG_STATIC_SEED: process.env.FSG_STATIC_SEED || '123456789',
       FSG_STATIC_FILTER: process.env.FSG_STATIC_FILTER || 'zsg',
       FSG_STATIC_TOKEN: process.env.FSG_STATIC_TOKEN || 'test-token'
@@ -164,7 +169,7 @@ async function matchmaker(accessToken, body) {
 }
 
 async function getMe(accessToken) {
-  const response = await fetch(`${BASE_URL}/mod-auth/me`, {
+  const response = await fetch(`${runtimeBaseUrl}/mod-auth/me`, {
     headers: {
       Authorization: `Bearer ${accessToken}`
     }
@@ -254,7 +259,7 @@ async function waitForHealth() {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${BASE_URL}/health`);
+      const response = await fetch(`${runtimeBaseUrl}/health`);
       if (response.ok) {
         return;
       }
@@ -266,7 +271,7 @@ async function waitForHealth() {
 }
 
 async function getHealth() {
-  const response = await fetch(`${BASE_URL}/health`);
+  const response = await fetch(`${runtimeBaseUrl}/health`);
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`health failed: HTTP ${response.status} ${text}`);
@@ -275,7 +280,7 @@ async function getHealth() {
 }
 
 async function postJson(pathname, body, headers) {
-  const response = await fetch(`${BASE_URL}${pathname}`, {
+  const response = await fetch(`${runtimeBaseUrl}${pathname}`, {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
     body: JSON.stringify(body)
@@ -293,7 +298,7 @@ async function postForm(pathname, body, headers) {
     params.set(key, body[key]);
   });
 
-  const response = await fetch(`${BASE_URL}${pathname}`, {
+  const response = await fetch(`${runtimeBaseUrl}${pathname}`, {
     method: 'POST',
     redirect: 'manual',
     headers: Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded' }, headers || {}),

@@ -106,6 +106,9 @@ function createJsonRepositories(store) {
       }
       return user;
     },
+    listRecent: (limit) => store.loadTable('users')
+      .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0))
+      .slice(0, Math.max(0, Number(limit) || 0)),
     findById: (id) => store.loadTable('users').find((user) => user.id === id) || null,
     findByUsernameLower: (usernameLower) => store.loadTable('users').find((user) => user.usernameLower === usernameLower) || null,
     findByDisplayNameLower: (displayNameLower) => store.loadTable('users').find((user) => user.displayNameLower === displayNameLower) || null
@@ -123,6 +126,10 @@ function createJsonRepositories(store) {
     },
     deleteByToken: (token) => {
       const rows = store.loadTable('webSessions').filter((session) => session.token !== token);
+      store.saveTable('webSessions', rows);
+    },
+    deleteByUserId: (userId) => {
+      const rows = store.loadTable('webSessions').filter((session) => session.userId !== userId);
       store.saveTable('webSessions', rows);
     }
   };
@@ -180,6 +187,18 @@ function createJsonRepositories(store) {
         store.saveTable('modSessions', rows);
       }
       return session;
+    },
+    listActiveByUserId: (userId, now) => store.loadTable('modSessions')
+      .filter((session) => session.userId === userId && !session.revokedAt && session.refreshExpiresAt > now),
+    revokeByUserId: (userId, now) => {
+      const rows = store.loadTable('modSessions');
+      rows.forEach((session) => {
+        if (session.userId === userId && !session.revokedAt) {
+          session.revokedAt = now;
+          session.updatedAt = now;
+        }
+      });
+      store.saveTable('modSessions', rows);
     }
   };
 

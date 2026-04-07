@@ -24,6 +24,10 @@ const MATCH_RATE_LIMIT_WINDOW_MS = Number(process.env.MATCH_RATE_LIMIT_WINDOW_MS
 const MATCH_RATE_LIMIT_MAX = Number(process.env.MATCH_RATE_LIMIT_MAX || 600);
 const PAGE_RATE_LIMIT_WINDOW_MS = Number(process.env.PAGE_RATE_LIMIT_WINDOW_MS || 60_000);
 const PAGE_RATE_LIMIT_MAX = Number(process.env.PAGE_RATE_LIMIT_MAX || 120);
+const ADMIN_USERNAMES = String(process.env.ADMIN_USERNAMES || '')
+  .split(',')
+  .map((value) => value.trim().toLowerCase())
+  .filter(Boolean);
 
 const TABLES = {
   users: path.join(DATA_DIR, 'users.json'),
@@ -58,5 +62,6 @@ module.exports = {
   MATCH_RATE_LIMIT_MAX,
   PAGE_RATE_LIMIT_WINDOW_MS,
   PAGE_RATE_LIMIT_MAX,
+  ADMIN_USERNAMES,
   TABLES
 };

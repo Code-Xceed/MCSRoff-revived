@@ -5,12 +5,19 @@ require('./src/utils/loadEnv').initializeRuntimeEnv();
 const assert = require('assert');
 const { spawn } = require('child_process');
 
-const BASE_URL = process.env.MCSR_AUTH_BASE_URL || 'http://127.0.0.1:8080';
 const USE_EXTERNAL_SERVER = process.env.MCSR_AUTH_EXTERNAL === '1';
+let runtimeBaseUrl = process.env.MCSR_AUTH_BASE_URL || 'http://127.0.0.1:8080';
 
 async function main() {
+  const port = USE_EXTERNAL_SERVER ? null : (18080 + Math.floor(Math.random() * 500));
+  runtimeBaseUrl = USE_EXTERNAL_SERVER ? runtimeBaseUrl : `http://127.0.0.1:${port}`;
   const server = USE_EXTERNAL_SERVER ? null : spawn(process.execPath, ['server.js'], {
     cwd: __dirname,
+    env: Object.assign({}, process.env, {
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      BASE_URL: runtimeBaseUrl
+    }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
@@ -80,6 +87,19 @@ async function main() {
     assert.strictEqual(meAfterRefresh.body.username, username, 'username mismatch after refreshed /me');
     assert.strictEqual(meAfterRefresh.body.display_name, displayName, 'display name mismatch after refreshed /me');
 
+    const revokeResponse = await postForm('/dashboard/revoke-mod-sessions', {}, { Cookie: sessionCookie });
+    assert.strictEqual(revokeResponse.statusCode, 302, 'session revoke did not redirect');
+
+    const meAfterRevoke = await getJson('/mod-auth/me', {
+      Authorization: `Bearer ${refreshResponse.body.access_token}`
+    });
+    assert.strictEqual(meAfterRevoke.statusCode, 401, 'revoked access token should be rejected');
+
+    const refreshAfterRevoke = await postJson('/mod-auth/refresh', {
+      refresh_token: refreshResponse.body.refresh_token
+    });
+    assert.strictEqual(refreshAfterRevoke.statusCode, 401, 'revoked refresh token should be rejected');
+
     console.log('Auth flow passed.');
     console.log(`Username: ${username}`);
     console.log(`Display Name: ${displayName}`);
@@ -93,7 +113,7 @@ async function waitForHealth() {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
     try {
-      const response = await fetch(`${BASE_URL}/health`);
+      const response = await fetch(`${runtimeBaseUrl}/health`);
       if (response.ok) {
         return;
       }
@@ -105,7 +125,7 @@ async function waitForHealth() {
 }
 
 async function postJson(pathname, body, headers) {
-  const response = await fetch(`${BASE_URL}${pathname}`, {
+  const response = await fetch(`${runtimeBaseUrl}${pathname}`, {
     method: 'POST',
     headers: Object.assign({ 'Content-Type': 'application/json' }, headers || {}),
     body: JSON.stringify(body)
@@ -118,7 +138,7 @@ async function postJson(pathname, body, headers) {
 }
 
 async function getJson(pathname, headers) {
-  const response = await fetch(`${BASE_URL}${pathname}`, {
+  const response = await fetch(`${runtimeBaseUrl}${pathname}`, {
     method: 'GET',
     headers: headers || {}
   });
@@ -135,7 +155,7 @@ async function postForm(pathname, body, headers) {
     params.set(key, body[key]);
   });
 
-  const response = await fetch(`${BASE_URL}${pathname}`, {
+  const response = await fetch(`${runtimeBaseUrl}${pathname}`, {
     method: 'POST',
     redirect: 'manual',
     headers: Object.assign({ 'Content-Type': 'application/x-www-form-urlencoded' }, headers || {}),

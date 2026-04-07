@@ -153,17 +153,20 @@ function createAuthApiController(options) {
       return sendJson(response, 401, { error: 'Refresh token expired' });
     }
 
+    const user = await repositories.users.findById(session.userId);
+    if (!user || user.status !== 'active') {
+      session.revokedAt = Date.now();
+      session.updatedAt = Date.now();
+      await repositories.modSessions.update(session);
+      return sendJson(response, 403, { error: 'Account inactive' });
+    }
+
     session.accessToken = `acc_${crypto.randomBytes(24).toString('hex')}`;
     session.refreshToken = `ref_${crypto.randomBytes(32).toString('hex')}`;
     session.accessExpiresAt = Date.now() + (accessTokenTtlSeconds * 1000);
     session.refreshExpiresAt = Date.now() + (refreshTokenTtlSeconds * 1000);
     session.updatedAt = Date.now();
     await repositories.modSessions.update(session);
-
-    const user = await repositories.users.findById(session.userId);
-    if (!user || user.status !== 'active') {
-      return sendJson(response, 403, { error: 'Account inactive' });
-    }
 
     await repositories.auditLogs.insert(createAuditLogEntry(
       user.id,

@@ -26,6 +26,7 @@ const {
   MATCH_RATE_LIMIT_MAX,
   PAGE_RATE_LIMIT_WINDOW_MS,
   PAGE_RATE_LIMIT_MAX,
+  ADMIN_USERNAMES,
   TABLES
 } = require('./src/config');
 const { createJsonStore } = require('./src/storage/jsonStore');
@@ -37,6 +38,7 @@ const { createAuditLogEntry } = require('./src/utils/runtimeRecords');
 const { safeNext, sanitizeDisplayText, parseCookies, setCookie, clearCookie, escapeHtml } = require('./src/utils/web');
 const { fetchFsgSeed } = require('./src/services/fsgService');
 const { createAuthService } = require('./src/services/authService');
+const { createAccountService } = require('./src/services/accountService');
 const { createMatchService } = require('./src/services/matchService');
 const { createAuthApiController } = require('./src/controllers/authApiController');
 const { createMatchmakingController } = require('./src/controllers/matchmakingController');
@@ -79,6 +81,18 @@ const {
   validateRegistration,
   formatDeviceStatus
 } = authService;
+const accountService = createAccountService({
+  repositories,
+  adminUsernames: ADMIN_USERNAMES,
+  rankForElo
+});
+const {
+  isAdminUser,
+  revokeUserSessions,
+  updateUserStatus,
+  listRecentUsers,
+  getSecuritySnapshot
+} = accountService;
 const matchService = createMatchService({
   repositories,
   sanitizeDisplayText,
@@ -190,6 +204,9 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && (requestUrl.pathname === '/' || requestUrl.pathname === '/dashboard')) {
       return handleDashboard(request, response, requestUrl);
     }
+    if (request.method === 'POST' && requestUrl.pathname === '/dashboard/revoke-mod-sessions') {
+      return handleSelfSessionRevoke(request, response);
+    }
     if (request.method === 'GET' && requestUrl.pathname === '/register') {
       return handleRegisterPage(request, response, requestUrl, null);
     }
@@ -207,6 +224,15 @@ const server = http.createServer(async (request, response) => {
     }
     if (request.method === 'GET' && requestUrl.pathname === '/link') {
       return handleLinkPage(request, response, requestUrl, null);
+    }
+    if (request.method === 'GET' && requestUrl.pathname === '/admin') {
+      return handleAdminPage(request, response, requestUrl, null);
+    }
+    if (request.method === 'POST' && requestUrl.pathname === '/admin/users/status') {
+      return handleAdminStatusUpdate(request, response);
+    }
+    if (request.method === 'POST' && requestUrl.pathname === '/admin/users/revoke-sessions') {
+      return handleAdminSessionRevoke(request, response);
     }
     if (request.method === 'POST' && requestUrl.pathname === '/link/approve') {
       return handleLinkDecision(request, response, true);
@@ -307,6 +333,13 @@ function resolveRateLimitRule(method, pathName) {
       windowMs: AUTH_RATE_LIMIT_WINDOW_MS
     };
   }
+  if (method === 'POST' && (pathName === '/dashboard/revoke-mod-sessions' || pathName === '/admin/users/status' || pathName === '/admin/users/revoke-sessions')) {
+    return {
+      bucket: `security:${pathName}`,
+      limit: AUTH_RATE_LIMIT_MAX,
+      windowMs: AUTH_RATE_LIMIT_WINDOW_MS
+    };
+  }
   if ((pathName === '/mod-auth/device/start' || pathName === '/mod-auth/device/poll' || pathName === '/mod-auth/refresh') && method === 'POST') {
     return {
       bucket: `mod-auth:${pathName}`,
@@ -335,7 +368,7 @@ function resolveRateLimitRule(method, pathName) {
       windowMs: MATCH_RATE_LIMIT_WINDOW_MS
     };
   }
-  if (method === 'GET' && (pathName === '/' || pathName === '/dashboard' || pathName === '/register' || pathName === '/login' || pathName === '/link' || pathName === '/health')) {
+  if (method === 'GET' && (pathName === '/' || pathName === '/dashboard' || pathName === '/register' || pathName === '/login' || pathName === '/link' || pathName === '/admin' || pathName === '/health')) {
     return {
       bucket: `page:${pathName}`,
       limit: PAGE_RATE_LIMIT_MAX,
@@ -377,6 +410,7 @@ async function handleDashboard(request, response, requestUrl) {
   }
 
   const pendingLinks = await getActiveDeviceLinksForUser(user.id);
+  const security = await getSecuritySnapshot(user.id);
   sendHtml(response, 200, renderPage('Dashboard', `
     <section class="grid two">
       <article class="card">
@@ -401,6 +435,33 @@ async function handleDashboard(request, response, requestUrl) {
         </form>
       </article>
     </section>
+    <section class="grid two">
+      <article class="card">
+        <h2>Account Security</h2>
+        <div class="stats">
+          <div class="stat-row"><span>Active mod sessions</span><strong>${security.activeModSessions.length}</strong></div>
+          <div class="stat-row"><span>Website status</span><strong>${escapeHtml(user.status)}</strong></div>
+        </div>
+        <form method="POST" action="/dashboard/revoke-mod-sessions">
+          <button class="danger" type="submit">Revoke All Mod Sessions</button>
+        </form>
+        <p class="helper">This signs the mod out on every linked client for this account. The website session you are using right now stays available.</p>
+      </article>
+      <article class="card">
+        <h2>Operations</h2>
+        <div class="stats">
+          <div class="stat-row"><span>Admin access</span><strong>${isAdminUser(user) ? 'Enabled' : 'No'}</strong></div>
+          <div class="stat-row"><span>Backend storage</span><strong>${escapeHtml(STORAGE_BACKEND)}</strong></div>
+        </div>
+        ${isAdminUser(user) ? `
+          <div class="inline-actions">
+            <a class="button secondary" href="/admin">Open Admin Panel</a>
+          </div>
+        ` : `
+          <p class="helper">Admin tools are available only for configured operator accounts.</p>
+        `}
+      </article>
+    </section>
     <section class="card">
       <h2>Recent active link requests</h2>
       ${pendingLinks.length === 0 ? `
@@ -415,9 +476,19 @@ async function handleDashboard(request, response, requestUrl) {
           `).join('')}
         </div>
       `}
-      <p class="footer-note">This scaffold stores data in local JSON files under <code>website/data</code>. Move these records to a database before public deployment.</p>
+      <p class="footer-note">Runtime storage backend: <code>${escapeHtml(STORAGE_BACKEND)}</code>.</p>
     </section>
   `, { user, currentPath: requestUrl.pathname }));
+}
+
+async function handleSelfSessionRevoke(request, response) {
+  const user = await getCurrentWebUser(request);
+  if (!user) {
+    redirect(response, '/login?next=%2Fdashboard');
+    return;
+  }
+  await revokeUserSessions(user.id, user.id, 'self_service_dashboard');
+  redirect(response, '/dashboard');
 }
 
 async function handleRegisterPage(request, response, requestUrl, errorMessage) {
@@ -610,6 +681,107 @@ async function handleLinkPage(request, response, requestUrl, errorMessage) {
   `, { user, currentPath: requestUrl.pathname }));
 }
 
+async function handleAdminPage(request, response, requestUrl, errorMessage) {
+  const user = await getCurrentWebUser(request);
+  if (!user) {
+    redirect(response, '/login?next=%2Fadmin');
+    return;
+  }
+  if (!isAdminUser(user)) {
+    sendHtml(response, 403, renderPage('Admin Required', `
+      <section class="card">
+        <h1>Admin access required</h1>
+        <p class="helper">This account is not configured for operator controls.</p>
+      </section>
+    `, { user, currentPath: requestUrl.pathname }));
+    return;
+  }
+
+  const query = sanitizeDisplayText(requestUrl.searchParams.get('q'), 24).toLowerCase();
+  let recentUsers = await listRecentUsers(40);
+  if (query) {
+    recentUsers = recentUsers.filter((entry) =>
+      entry.user.usernameLower.includes(query) || entry.user.displayNameLower.includes(query)
+    );
+  }
+
+  sendHtml(response, 200, renderPage('Admin Panel', `
+    <section class="card">
+      <h1>Admin Panel</h1>
+      ${renderFlash(errorMessage, 'error')}
+      <form class="form-grid" method="GET" action="/admin">
+        <div>
+          <label for="q">Find User</label>
+          <input id="q" name="q" type="text" maxlength="24" value="${escapeHtml(query)}" placeholder="username or display name" />
+        </div>
+        <input type="submit" value="Filter Users" />
+      </form>
+      <p class="helper">These controls revoke active sessions and enforce account status across the website and mod backend.</p>
+    </section>
+    <section class="card">
+      <h2>Recent Accounts</h2>
+      ${recentUsers.length === 0 ? `
+        <p class="helper">No users matched the current filter.</p>
+      ` : `
+        <div class="stats">
+          ${recentUsers.map((entry) => renderAdminUserRow(entry)).join('')}
+        </div>
+      `}
+    </section>
+  `, { user, currentPath: requestUrl.pathname }));
+}
+
+async function handleAdminStatusUpdate(request, response) {
+  const user = await getCurrentWebUser(request);
+  if (!user) {
+    redirect(response, '/login?next=%2Fadmin');
+    return;
+  }
+  if (!isAdminUser(user)) {
+    sendPlain(response, 403, 'Admin access required');
+    return;
+  }
+  const body = await readBody(request);
+  const targetUserId = typeof body.user_id === 'string' ? body.user_id.trim() : '';
+  const nextStatus = sanitizeDisplayText(body.status, 16).toLowerCase();
+  const query = sanitizeDisplayText(body.q, 24);
+  if (!targetUserId || !nextStatus) {
+    return handleAdminPage(request, response, new URL(`/admin?q=${encodeURIComponent(query)}`, BASE_URL), 'User and status are required.');
+  }
+  if (targetUserId === user.id && nextStatus !== 'active') {
+    return handleAdminPage(request, response, new URL(`/admin?q=${encodeURIComponent(query)}`, BASE_URL), 'Refusing to disable the current admin session.');
+  }
+  try {
+    const updated = await updateUserStatus(targetUserId, nextStatus, user.id, 'admin_panel');
+    if (!updated) {
+      return handleAdminPage(request, response, new URL(`/admin?q=${encodeURIComponent(query)}`, BASE_URL), 'Target user was not found.');
+    }
+  } catch (error) {
+    return handleAdminPage(request, response, new URL(`/admin?q=${encodeURIComponent(query)}`, BASE_URL), error.message || 'Unable to update account status.');
+  }
+  redirect(response, `/admin${query ? `?q=${encodeURIComponent(query)}` : ''}`);
+}
+
+async function handleAdminSessionRevoke(request, response) {
+  const user = await getCurrentWebUser(request);
+  if (!user) {
+    redirect(response, '/login?next=%2Fadmin');
+    return;
+  }
+  if (!isAdminUser(user)) {
+    sendPlain(response, 403, 'Admin access required');
+    return;
+  }
+  const body = await readBody(request);
+  const targetUserId = typeof body.user_id === 'string' ? body.user_id.trim() : '';
+  const query = sanitizeDisplayText(body.q, 24);
+  if (!targetUserId) {
+    return handleAdminPage(request, response, new URL(`/admin?q=${encodeURIComponent(query)}`, BASE_URL), 'Target user is required.');
+  }
+  await revokeUserSessions(targetUserId, user.id, 'admin_panel');
+  redirect(response, `/admin${query ? `?q=${encodeURIComponent(query)}` : ''}`);
+}
+
 async function handleLinkDecision(request, response, approve) {
   const user = await getCurrentWebUser(request);
   if (!user) {
@@ -695,6 +867,37 @@ function renderDeviceLinkStatus(deviceLink, currentUser) {
       <div class="stat-row"><span>Loader</span><strong>${escapeHtml(deviceLink.loader)}</strong></div>
       <div class="stat-row"><span>Scope</span><strong>${escapeHtml(deviceLink.scope)}</strong></div>
       <div class="stat-row"><span>Status</span><strong>${escapeHtml(statusText)}${approvedByCurrentUser ? ' by you' : ''}</strong></div>
+    </div>
+  `;
+}
+
+function renderAdminUserRow(entry) {
+  const user = entry.user;
+  const queryValue = `${user.username}`;
+  const normalizedStatus = String(user.status || 'active').toLowerCase();
+  const statusOptions = ['active', 'disabled', 'banned'].map((value) =>
+    `<option value="${value}"${value === normalizedStatus ? ' selected' : ''}>${value}</option>`
+  ).join('');
+  return `
+    <div class="admin-user-row">
+      <div class="admin-user-meta">
+        <div><strong>${escapeHtml(user.displayName)}</strong> <span class="helper">@${escapeHtml(user.username)}</span></div>
+        <div class="helper">Elo ${user.elo} | ${escapeHtml(user.rankTier)} | ${escapeHtml(user.status)} | Mod sessions ${entry.activeModSessionCount}</div>
+        <div class="helper">User ID: <code>${escapeHtml(user.id)}</code></div>
+      </div>
+      <div class="inline-actions">
+        <form method="POST" action="/admin/users/status">
+          <input type="hidden" name="user_id" value="${escapeHtml(user.id)}" />
+          <input type="hidden" name="q" value="${escapeHtml(queryValue)}" />
+          <select name="status">${statusOptions}</select>
+          <input type="submit" value="Update Status" />
+        </form>
+        <form method="POST" action="/admin/users/revoke-sessions">
+          <input type="hidden" name="user_id" value="${escapeHtml(user.id)}" />
+          <input type="hidden" name="q" value="${escapeHtml(queryValue)}" />
+          <button class="danger" type="submit">Revoke Sessions</button>
+        </form>
+      </div>
     </div>
   `;
 }

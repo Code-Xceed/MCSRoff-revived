@@ -502,6 +502,16 @@ function createPostgresRepositories() {
       });
       return mapUserFromRow(rows[0]);
     },
+    listRecent: async (limit) => {
+      const rows = await request('GET', 'app_users', {
+        params: {
+          select: '*',
+          order: 'updated_at.desc',
+          limit: String(Math.max(0, Number(limit) || 0))
+        }
+      });
+      return rows.map(mapUserFromRow);
+    },
     findById: async (id) => {
       const rows = await request('GET', 'app_users', { params: { select: '*', id: `eq.${id}` } });
       return mapUserFromRow(rows[0]);
@@ -544,6 +554,9 @@ function createPostgresRepositories() {
     },
     deleteByToken: async (token) => {
       await request('DELETE', 'web_sessions', { params: { token: `eq.${token}` } });
+    },
+    deleteByUserId: async (userId) => {
+      await request('DELETE', 'web_sessions', { params: { user_id: `eq.${userId}` } });
     }
   };
 
@@ -673,6 +686,30 @@ function createPostgresRepositories() {
         }
       });
       return mapModSessionFromRow(rows[0]);
+    },
+    listActiveByUserId: async (userId, now) => {
+      const rows = await request('GET', 'mod_sessions', {
+        params: {
+          select: '*',
+          user_id: `eq.${userId}`,
+          revoked_at: 'is.null',
+          refresh_expires_at: `gt.${new Date(now).toISOString()}`
+        }
+      });
+      return rows.map(mapModSessionFromRow);
+    },
+    revokeByUserId: async (userId, now) => {
+      await request('PATCH', 'mod_sessions', {
+        headers: { Prefer: 'return=minimal' },
+        params: {
+          user_id: `eq.${userId}`,
+          revoked_at: 'is.null'
+        },
+        body: {
+          revoked_at: new Date(now).toISOString(),
+          updated_at: new Date(now).toISOString()
+        }
+      });
     }
   };
 
