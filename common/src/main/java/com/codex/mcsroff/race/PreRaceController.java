@@ -16,11 +16,13 @@ import java.util.concurrent.CompletableFuture;
 
 public final class PreRaceController {
     private static final long POLL_INTERVAL_MILLIS = 900L;
+    private static final long HEARTBEAT_INTERVAL_MILLIS = 4000L;
     private static final long REALTIME_FRESHNESS_MILLIS = 2500L;
 
     private MatchSession activeSession;
     private CompletableFuture<RemoteMatchSnapshot> pendingBackendFuture;
     private long nextPollAtMillis = -1L;
+    private long nextHeartbeatAtMillis = -1L;
     private long countdownTargetMillis = -1L;
     private boolean localWorldGenerated;
     private boolean localReadySent;
@@ -38,6 +40,7 @@ public final class PreRaceController {
         this.activeSession = session;
         this.pendingBackendFuture = null;
         this.nextPollAtMillis = System.currentTimeMillis() + 200L;
+        this.nextHeartbeatAtMillis = System.currentTimeMillis() + 500L;
         this.countdownTargetMillis = -1L;
         this.localWorldGenerated = false;
         this.localReadySent = false;
@@ -68,6 +71,9 @@ public final class PreRaceController {
 
         if (!this.localWorldGenerated) {
             if (minecraft.level == null || minecraft.player == null) {
+                if (this.pendingBackendFuture == null && now >= this.nextHeartbeatAtMillis) {
+                    requestHeartbeat("Waiting for local world");
+                }
                 return;
             }
 
@@ -94,6 +100,11 @@ public final class PreRaceController {
             }
         } else {
             ensurePreparationScreen(minecraft);
+        }
+
+        if (this.pendingBackendFuture == null && now >= this.nextHeartbeatAtMillis) {
+            requestHeartbeat(this.countdownTargetMillis > 0L ? "Countdown synchronized" : "Waiting for opponent");
+            return;
         }
 
         if (shouldSendReady()) {
@@ -196,6 +207,21 @@ public final class PreRaceController {
         this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
     }
 
+    private void requestHeartbeat(String statusText) {
+        if (!McsroffRuntime.getAccountManager().hasTrustedSession()) {
+            this.localBackendStatus = "Auth expired";
+            return;
+        }
+        if (statusText != null && !statusText.isEmpty()) {
+            this.localBackendStatus = statusText;
+        }
+        this.pendingBackendFuture = McsroffRuntime.getAccountManager().executeAuthenticated(session ->
+                McsroffRuntime.getBackendApi().heartbeat(session, this.activeSession.getMatchId())
+        );
+        this.nextHeartbeatAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
+        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+    }
+
     private void consumeBackendResult() {
         if (this.pendingBackendFuture == null || !this.pendingBackendFuture.isDone()) {
             return;
@@ -207,6 +233,7 @@ public final class PreRaceController {
         } catch (Exception exception) {
             this.localBackendStatus = "Backend sync retrying";
             this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+            this.nextHeartbeatAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
             if (this.localReadySent) {
                 this.localReadySent = false;
             }
@@ -273,6 +300,7 @@ public final class PreRaceController {
         }
 
         this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+        this.nextHeartbeatAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
     private boolean shouldSendReady() {
@@ -300,6 +328,7 @@ public final class PreRaceController {
         this.activeSession = null;
         this.pendingBackendFuture = null;
         this.nextPollAtMillis = -1L;
+        this.nextHeartbeatAtMillis = -1L;
         this.countdownTargetMillis = -1L;
         this.localWorldGenerated = false;
         this.localReadySent = false;
