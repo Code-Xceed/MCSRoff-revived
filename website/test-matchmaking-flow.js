@@ -82,6 +82,25 @@ async function main() {
     assert(finishSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.result === 'win'), 'winner result missing');
     assert(finishSnapshot.match.players.some((player) => player.player_id === playerTwo.userId && player.result === 'loss'), 'loser result missing');
 
+    const finishedEventCount = finishSnapshot.match.events.length;
+    const lateActivitySnapshot = await matchmaker(playerTwo.accessToken, {
+      action: 'report_activity',
+      match_id: firstMatch.matchId,
+      type: 'advancement',
+      activity_key: 'minecraft:story/enter_the_nether',
+      status_text: 'Entered Nether',
+      chat_message: 'We Need to Go Deeper',
+      advancement_id: 'minecraft:story/enter_the_nether'
+    });
+    assert.strictEqual(lateActivitySnapshot.match.state, 'finished', 'late activity should not regress a finished match');
+    assert.strictEqual(lateActivitySnapshot.match.events.length, finishedEventCount, 'late activity should not append events after finish');
+
+    const lateHeartbeatSnapshot = await matchmaker(playerTwo.accessToken, {
+      action: 'heartbeat',
+      match_id: firstMatch.matchId
+    });
+    assert.strictEqual(lateHeartbeatSnapshot.match.state, 'finished', 'late heartbeat should preserve finished match state');
+
     const winnerProfile = await getMe(playerOne.accessToken);
     const loserProfile = await getMe(playerTwo.accessToken);
     assert(winnerProfile.elo > 1200, 'winner Elo did not increase');

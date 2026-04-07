@@ -375,6 +375,9 @@ function createMatchmakingController(options) {
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
+    if (isTerminalMatchState(match.state)) {
+      return sendSnapshot(response, match);
+    }
 
     const player = findMatchPlayer(match, user.id);
     if (!player) {
@@ -424,6 +427,9 @@ function createMatchmakingController(options) {
     let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
+    }
+    if (isTerminalMatchState(match.state)) {
+      return sendSnapshot(response, match);
     }
 
     match = await touchPlayerPresence(match, user.id);
