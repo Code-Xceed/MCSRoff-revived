@@ -74,11 +74,16 @@ async function main() {
     assert(afterOneGenerated.match.players.some((player) => player.world_status === 'generated'), 'generated state missing after first world generation');
 
     await matchmaker(playerTwo.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
-    await matchmaker(playerOne.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id });
     const beforeCountdown = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
     assert.strictEqual(beforeCountdown.match.state, 'world_generated', 'countdown should not start until both ready');
 
-    const finalSnapshot = await matchmaker(playerTwo.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id });
+    const readySnapshots = await Promise.all([
+      matchmaker(playerOne.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id }),
+      matchmaker(playerTwo.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id })
+    ]);
+    const finalSnapshot = readySnapshots.find((snapshot) =>
+      snapshot.match && snapshot.match.state === 'countdown' && snapshot.match.countdown_target_epoch_millis > Date.now()
+    ) || await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'countdown', 5000);
     assert.strictEqual(finalSnapshot.match.state, 'countdown', 'countdown did not start after both ready');
     assert(finalSnapshot.match.countdown_target_epoch_millis > Date.now(), 'countdown target missing or invalid');
 

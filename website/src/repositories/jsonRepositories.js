@@ -1,6 +1,93 @@
 'use strict';
 
 function createJsonRepositories(store) {
+  function worldStatusRank(status) {
+    switch (String(status || '').toLowerCase()) {
+      case 'queued': return 0;
+      case 'generating': return 1;
+      case 'generated': return 2;
+      case 'ready': return 3;
+      case 'running': return 4;
+      case 'finished': return 5;
+      case 'disconnected': return 6;
+      default: return 0;
+    }
+  }
+
+  function matchStateRank(state) {
+    switch (String(state || '').toLowerCase()) {
+      case 'matched': return 0;
+      case 'world_generating': return 1;
+      case 'world_generated': return 2;
+      case 'countdown': return 3;
+      case 'running': return 4;
+      case 'finished': return 5;
+      case 'aborted': return 6;
+      default: return 0;
+    }
+  }
+
+  function mergeMatchPlayer(existing, incoming) {
+    const left = existing || {};
+    const right = incoming || {};
+    const leftUpdatedAt = Number(left.updatedAt || 0);
+    const rightUpdatedAt = Number(right.updatedAt || 0);
+    return {
+      playerId: right.playerId || left.playerId || '',
+      username: right.username || left.username || '',
+      displayName: right.displayName || left.displayName || '',
+      eloSnapshot: right.eloSnapshot != null ? right.eloSnapshot : (left.eloSnapshot || 1200),
+      rankSnapshot: right.rankSnapshot || left.rankSnapshot || '',
+      slot: right.slot || left.slot || '',
+      connected: left.connected === false || right.connected === false ? false : (right.connected !== false && left.connected !== false),
+      worldStatus: worldStatusRank(right.worldStatus) >= worldStatusRank(left.worldStatus)
+        ? (right.worldStatus || left.worldStatus || 'queued')
+        : (left.worldStatus || right.worldStatus || 'queued'),
+      activityStatus: rightUpdatedAt >= leftUpdatedAt ? (right.activityStatus || left.activityStatus || '') : (left.activityStatus || right.activityStatus || ''),
+      lastSeenAt: Math.max(Number(left.lastSeenAt || 0), Number(right.lastSeenAt || 0)),
+      readyAt: Math.max(Number(left.readyAt || 0), Number(right.readyAt || 0)),
+      finishedAt: Math.max(Number(left.finishedAt || 0), Number(right.finishedAt || 0)),
+      finishTimeMs: Math.max(Number(left.finishTimeMs || 0), Number(right.finishTimeMs || 0)),
+      result: rightUpdatedAt >= leftUpdatedAt ? (right.result || left.result || '') : (left.result || right.result || ''),
+      createdAt: Math.min(Number(left.createdAt || 0) || Number(right.createdAt || 0), Number(right.createdAt || 0) || Number(left.createdAt || 0)),
+      updatedAt: Math.max(leftUpdatedAt, rightUpdatedAt)
+    };
+  }
+
+  function mergeMatch(existing, incoming) {
+    if (!existing) {
+      return incoming;
+    }
+    const playersById = new Map();
+    (existing.players || []).forEach((player) => playersById.set(player.playerId, player));
+    (incoming.players || []).forEach((player) => playersById.set(player.playerId, mergeMatchPlayer(playersById.get(player.playerId), player)));
+
+    const eventsBySeq = new Map();
+    (existing.events || []).forEach((event) => eventsBySeq.set(String(event.seq || 0), event));
+    (incoming.events || []).forEach((event) => eventsBySeq.set(String(event.seq || 0), event));
+
+    const existingState = String(existing.state || '');
+    const incomingState = String(incoming.state || '');
+    return {
+      id: incoming.id || existing.id,
+      state: matchStateRank(incomingState) >= matchStateRank(existingState) ? (incomingState || existingState || 'matched') : (existingState || incomingState || 'matched'),
+      seedMode: incoming.seedMode || existing.seedMode || 'MATCH',
+      seedTypeLabel: incoming.seedTypeLabel || existing.seedTypeLabel || '',
+      filterIds: Array.isArray(incoming.filterIds) && incoming.filterIds.length > 0 ? incoming.filterIds : (existing.filterIds || []),
+      seed: incoming.seed || existing.seed || '',
+      fsgFilterId: incoming.fsgFilterId || existing.fsgFilterId || '',
+      fsgToken: incoming.fsgToken || existing.fsgToken || '',
+      countdownTargetEpochMillis: existing.countdownTargetEpochMillis > 0 ? existing.countdownTargetEpochMillis : (incoming.countdownTargetEpochMillis || 0),
+      abortReason: incoming.abortReason || existing.abortReason || '',
+      winnerPlayerId: incoming.winnerPlayerId || existing.winnerPlayerId || '',
+      nextEventSeq: Math.max(Number(existing.nextEventSeq || 1), Number(incoming.nextEventSeq || 1)),
+      createdAt: Math.min(Number(existing.createdAt || 0) || Number(incoming.createdAt || 0), Number(incoming.createdAt || 0) || Number(existing.createdAt || 0)),
+      updatedAt: Math.max(Number(existing.updatedAt || 0), Number(incoming.updatedAt || 0)),
+      players: Array.from(playersById.values()),
+      events: Array.from(eventsBySeq.values()).sort((left, right) => (left.seq || 0) - (right.seq || 0))
+    };
+  }
+
   const users = {
     getAll: () => store.loadTable('users'),
     saveAll: (rows) => store.saveTable('users', rows),
@@ -177,10 +264,29 @@ function createJsonRepositories(store) {
       const rows = store.loadTable('matches');
       const index = rows.findIndex((item) => item.id === match.id);
       if (index >= 0) {
-        rows[index] = match;
+        rows[index] = mergeMatch(rows[index], match);
         store.saveTable('matches', rows);
       }
-      return match;
+      return rows.find((item) => item.id === match.id) || match;
+    },
+    updatePlayer: (matchId, playerId, fields) => {
+      const rows = store.loadTable('matches');
+      const index = rows.findIndex((item) => item.id === matchId);
+      if (index < 0) {
+        return null;
+      }
+      const match = rows[index];
+      if (!Array.isArray(match.players)) {
+        match.players = [];
+      }
+      const playerIndex = match.players.findIndex((player) => player.playerId === playerId);
+      if (playerIndex < 0) {
+        return match;
+      }
+      match.players[playerIndex] = Object.assign({}, match.players[playerIndex], fields);
+      rows[index] = match;
+      store.saveTable('matches', rows);
+      return rows[index];
     },
     findActiveByUserId: (userId) => {
       const activeStates = new Set(['matched', 'world_generating', 'world_generated', 'countdown', 'running']);

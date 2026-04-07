@@ -240,6 +240,112 @@ function createPostgresRepositories() {
     } : null;
   }
 
+  function worldStatusRank(status) {
+    switch (String(status || '').toLowerCase()) {
+      case 'queued': return 0;
+      case 'generating': return 1;
+      case 'generated': return 2;
+      case 'ready': return 3;
+      case 'running': return 4;
+      case 'finished': return 5;
+      case 'disconnected': return 6;
+      default: return 0;
+    }
+  }
+
+  function matchStateRank(state) {
+    switch (String(state || '').toLowerCase()) {
+      case 'matched': return 0;
+      case 'world_generating': return 1;
+      case 'world_generated': return 2;
+      case 'countdown': return 3;
+      case 'running': return 4;
+      case 'finished': return 5;
+      case 'aborted': return 6;
+      default: return 0;
+    }
+  }
+
+  function mergeMatchPlayer(existing, incoming) {
+    const left = existing || {};
+    const right = incoming || {};
+    const leftUpdatedAt = Number(left.updatedAt || 0);
+    const rightUpdatedAt = Number(right.updatedAt || 0);
+    const mergedWorldStatus = worldStatusRank(right.worldStatus) >= worldStatusRank(left.worldStatus)
+      ? (right.worldStatus || left.worldStatus || 'queued')
+      : (left.worldStatus || right.worldStatus || 'queued');
+    const preferRightText = rightUpdatedAt >= leftUpdatedAt;
+    return {
+      playerId: right.playerId || left.playerId || '',
+      username: right.username || left.username || '',
+      displayName: right.displayName || left.displayName || '',
+      eloSnapshot: right.eloSnapshot != null ? right.eloSnapshot : (left.eloSnapshot || 1200),
+      rankSnapshot: right.rankSnapshot || left.rankSnapshot || '',
+      slot: right.slot || left.slot || '',
+      connected: left.connected === false || right.connected === false ? false : (right.connected !== false && left.connected !== false),
+      worldStatus: mergedWorldStatus,
+      activityStatus: preferRightText ? (right.activityStatus || left.activityStatus || '') : (left.activityStatus || right.activityStatus || ''),
+      lastSeenAt: Math.max(Number(left.lastSeenAt || 0), Number(right.lastSeenAt || 0)),
+      readyAt: Math.max(Number(left.readyAt || 0), Number(right.readyAt || 0)),
+      finishedAt: Math.max(Number(left.finishedAt || 0), Number(right.finishedAt || 0)),
+      finishTimeMs: Math.max(Number(left.finishTimeMs || 0), Number(right.finishTimeMs || 0)),
+      result: preferRightText ? (right.result || left.result || '') : (left.result || right.result || ''),
+      createdAt: Math.min(Number(left.createdAt || 0) || Number(right.createdAt || 0), Number(right.createdAt || 0) || Number(left.createdAt || 0)),
+      updatedAt: Math.max(leftUpdatedAt, rightUpdatedAt)
+    };
+  }
+
+  function mergeMatch(existing, incoming) {
+    if (!existing) {
+      return incoming;
+    }
+
+    const mergedPlayersById = new Map();
+    (existing.players || []).forEach((player) => {
+      mergedPlayersById.set(player.playerId, player);
+    });
+    (incoming.players || []).forEach((player) => {
+      const current = mergedPlayersById.get(player.playerId);
+      mergedPlayersById.set(player.playerId, mergeMatchPlayer(current, player));
+    });
+
+    const mergedEventsBySeq = new Map();
+    (existing.events || []).forEach((event) => {
+      mergedEventsBySeq.set(String(event.seq || 0), event);
+    });
+    (incoming.events || []).forEach((event) => {
+      mergedEventsBySeq.set(String(event.seq || 0), event);
+    });
+
+    const existingState = String(existing.state || '');
+    const incomingState = String(incoming.state || '');
+    let mergedState = matchStateRank(incomingState) >= matchStateRank(existingState) ? incomingState : existingState;
+    if (!mergedState) {
+      mergedState = existingState || incomingState || 'matched';
+    }
+
+    return {
+      id: incoming.id || existing.id,
+      state: mergedState,
+      seedMode: incoming.seedMode || existing.seedMode || 'MATCH',
+      seedTypeLabel: incoming.seedTypeLabel || existing.seedTypeLabel || '',
+      filterIds: Array.isArray(incoming.filterIds) && incoming.filterIds.length > 0 ? incoming.filterIds : (existing.filterIds || []),
+      seed: incoming.seed || existing.seed || '',
+      fsgFilterId: incoming.fsgFilterId || existing.fsgFilterId || '',
+      fsgToken: incoming.fsgToken || existing.fsgToken || '',
+      countdownTargetEpochMillis: existing.countdownTargetEpochMillis > 0
+        ? existing.countdownTargetEpochMillis
+        : (incoming.countdownTargetEpochMillis || 0),
+      abortReason: incoming.abortReason || existing.abortReason || '',
+      winnerPlayerId: incoming.winnerPlayerId || existing.winnerPlayerId || '',
+      nextEventSeq: Math.max(Number(existing.nextEventSeq || 1), Number(incoming.nextEventSeq || 1)),
+      createdAt: Math.min(Number(existing.createdAt || 0) || Number(incoming.createdAt || 0), Number(incoming.createdAt || 0) || Number(existing.createdAt || 0)),
+      updatedAt: Math.max(Number(existing.updatedAt || 0), Number(incoming.updatedAt || 0)),
+      players: Array.from(mergedPlayersById.values()),
+      events: Array.from(mergedEventsBySeq.values()).sort((left, right) => (left.seq || 0) - (right.seq || 0))
+    };
+  }
+
   async function fetchMatchRelations(matchIds) {
     if (!matchIds.length) {
       return { playersByMatchId: new Map(), eventsByMatchId: new Map() };
@@ -284,6 +390,12 @@ function createPostgresRepositories() {
     return (matchRows || []).map((row) =>
       mapMatchFromRows(row, relations.playersByMatchId.get(row.id) || [], relations.eventsByMatchId.get(row.id) || [])
     );
+  }
+
+  async function loadMatchById(id) {
+    const rows = await request('GET', 'matches', { params: { select: '*', id: `eq.${id}` } });
+    const matches = await loadMatchesByRows(rows);
+    return matches[0] || null;
   }
 
   async function replaceMatchChildren(match) {
@@ -643,9 +755,7 @@ function createPostgresRepositories() {
     getAll: async () => loadMatchesByRows(await request('GET', 'matches', { params: { select: '*' } })),
     saveAll: async () => { throw new Error('saveAll is not supported for postgres matches repository.'); },
     findById: async (id) => {
-      const rows = await request('GET', 'matches', { params: { select: '*', id: `eq.${id}` } });
-      const matches = await loadMatchesByRows(rows);
-      return matches[0] || null;
+      return loadMatchById(id);
     },
     insert: async (match) => {
       const rows = await request('POST', 'matches', {
@@ -672,26 +782,54 @@ function createPostgresRepositories() {
       return inserted[0] || null;
     },
     update: async (match) => {
+      const existing = await loadMatchById(match.id);
+      const mergedMatch = mergeMatch(existing, match);
       await request('PATCH', 'matches', {
         headers: { Prefer: 'return=minimal' },
-        params: { id: `eq.${match.id}` },
+        params: { id: `eq.${mergedMatch.id}` },
         body: {
-          state: match.state,
-          seed_mode: match.seedMode,
-          seed_type_label: match.seedTypeLabel,
-          filter_ids: match.filterIds || [],
-          seed: match.seed || '',
-          fsg_filter_id: match.fsgFilterId || '',
-          fsg_token: match.fsgToken || '',
-          countdown_target_epoch_millis: match.countdownTargetEpochMillis || 0,
-          abort_reason: match.abortReason || '',
-          winner_player_id: match.winnerPlayerId || null,
-          next_event_seq: match.nextEventSeq || 1,
-          updated_at: toIsoFromMillis(match.updatedAt)
+          state: mergedMatch.state,
+          seed_mode: mergedMatch.seedMode,
+          seed_type_label: mergedMatch.seedTypeLabel,
+          filter_ids: mergedMatch.filterIds || [],
+          seed: mergedMatch.seed || '',
+          fsg_filter_id: mergedMatch.fsgFilterId || '',
+          fsg_token: mergedMatch.fsgToken || '',
+          countdown_target_epoch_millis: mergedMatch.countdownTargetEpochMillis || 0,
+          abort_reason: mergedMatch.abortReason || '',
+          winner_player_id: mergedMatch.winnerPlayerId || null,
+          next_event_seq: mergedMatch.nextEventSeq || 1,
+          updated_at: toIsoFromMillis(mergedMatch.updatedAt)
         }
       });
-      await replaceMatchChildren(match);
-      return match;
+      await replaceMatchChildren(mergedMatch);
+      return loadMatchById(mergedMatch.id);
+    },
+    updatePlayer: async (matchId, playerId, fields) => {
+      const body = {};
+      if (fields.username !== undefined) body.username = fields.username;
+      if (fields.displayName !== undefined) body.display_name = fields.displayName;
+      if (fields.eloSnapshot !== undefined) body.elo_snapshot = fields.eloSnapshot;
+      if (fields.rankSnapshot !== undefined) body.rank_snapshot = fields.rankSnapshot;
+      if (fields.slot !== undefined) body.slot = fields.slot;
+      if (fields.connected !== undefined) body.connected = fields.connected !== false;
+      if (fields.worldStatus !== undefined) body.world_status = fields.worldStatus;
+      if (fields.activityStatus !== undefined) body.activity_status = fields.activityStatus || '';
+      if (fields.lastSeenAt !== undefined) body.last_seen_at = toIsoFromMillis(fields.lastSeenAt);
+      if (fields.readyAt !== undefined) body.ready_at = toIsoFromMillis(fields.readyAt);
+      if (fields.finishedAt !== undefined) body.finished_at = toIsoFromMillis(fields.finishedAt);
+      if (fields.finishTimeMs !== undefined) body.finish_time_ms = fields.finishTimeMs || 0;
+      if (fields.result !== undefined) body.result = fields.result || '';
+      if (fields.updatedAt !== undefined) body.updated_at = toIsoFromMillis(fields.updatedAt);
+      await request('PATCH', 'match_players', {
+        headers: { Prefer: 'return=minimal' },
+        params: {
+          match_id: `eq.${matchId}`,
+          player_id: `eq.${playerId}`
+        },
+        body
+      });
+      return loadMatchById(matchId);
     },
     findActiveByUserId: async (userId) => {
       const playerRows = await request('GET', 'match_players', {

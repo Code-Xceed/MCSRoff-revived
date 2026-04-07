@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { createAuditLogEntry, createRatingHistoryEntry } = require('../utils/runtimeRecords');
+const PRE_RACE_COUNTDOWN_MILLIS = 10000;
 
 function createMatchService(options) {
   const {
@@ -139,10 +140,6 @@ function createMatchService(options) {
     if (match.state === 'aborted' || match.state === 'finished' || match.state === 'running' || match.state === 'countdown') {
       return;
     }
-    if (allPlayersAtLeast(match, 'ready')) {
-      match.state = 'world_generated';
-      return;
-    }
     if (allPlayersAtLeast(match, 'generated')) {
       match.state = 'world_generated';
       return;
@@ -202,11 +199,33 @@ function createMatchService(options) {
   }
 
   async function persistMatchState(match) {
+    const now = Date.now();
     trimMatchEvents(match);
     normalizeCountdownState(match);
+    promoteCountdownIfReady(match, now);
     updateMatchStateFromPlayers(match);
-    match.updatedAt = Date.now();
-    await repositories.matches.update(match);
+    match.updatedAt = now;
+    return repositories.matches.update(match);
+  }
+
+  function promoteCountdownIfReady(match, now) {
+    if (!Array.isArray(match.players) || match.players.length !== 2) {
+      return;
+    }
+    if (match.state === 'aborted' || match.state === 'finished' || match.state === 'running') {
+      return;
+    }
+    const bothReady = match.players.every((player) => {
+      const stage = worldStage(player.worldStatus);
+      return stage >= worldStage('ready');
+    });
+    if (!bothReady) {
+      return;
+    }
+    if (!match.countdownTargetEpochMillis || match.countdownTargetEpochMillis <= now) {
+      match.countdownTargetEpochMillis = now + PRE_RACE_COUNTDOWN_MILLIS;
+    }
+    match.state = 'countdown';
   }
 
   async function cleanupMatchmakerState() {

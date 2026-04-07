@@ -25,7 +25,6 @@ function createMatchmakingController(options) {
     requireOwnedMatch,
     touchMatchPlayer,
     persistMatchState,
-    heartbeatMatch,
     reportMatchFinish
   } = options;
 
@@ -106,7 +105,7 @@ function createMatchmakingController(options) {
     }
 
     touchMatchPlayer(match, user.id);
-    await persistMatchState(match);
+    match = await persistMatchState(match);
     matchStreamHub.subscribe(match.id, request, response, buildSnapshotResponse('matched', match));
   }
 
@@ -114,8 +113,8 @@ function createMatchmakingController(options) {
     const activeMatch = await findActiveMatchForUser(user.id);
     if (activeMatch) {
       touchMatchPlayer(activeMatch, user.id);
-      await persistMatchState(activeMatch);
-      return sendSnapshot(response, activeMatch);
+      const refreshedMatch = await persistMatchState(activeMatch);
+      return sendSnapshot(response, refreshedMatch);
     }
 
     const seedMode = normalizeSeedMode(body.seed_mode);
@@ -220,8 +219,8 @@ function createMatchmakingController(options) {
       return sendJson(response, 200, { queue_status: 'searching' });
     }
 
-    touchMatchPlayer(match, user.id);
-    await persistMatchState(match);
+    match = await touchPlayerPresence(match, user.id);
+    match = await persistMatchState(match);
     return sendSnapshot(response, match);
   }
 
@@ -239,7 +238,7 @@ function createMatchmakingController(options) {
         player.worldStatus = 'disconnected';
         player.updatedAt = Date.now();
       }
-      await persistMatchState(match);
+      match = await persistMatchState(match);
     }
 
     await repositories.auditLogs.insert(createAuditLogEntry(
@@ -259,16 +258,19 @@ function createMatchmakingController(options) {
   }
 
   async function handleMarkWorldGenerated(response, user, body) {
-    const match = await requireOwnedMatch(user.id, body.match_id);
+    let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
 
-    const player = findMatchPlayer(match, user.id);
-    touchMatchPlayer(match, user.id);
-    player.worldStatus = 'generated';
-    player.updatedAt = Date.now();
-    await persistMatchState(match);
+    const now = Date.now();
+    match = await updatePlayerState(match.id, user.id, {
+      connected: true,
+      lastSeenAt: now,
+      worldStatus: 'generated',
+      updatedAt: now
+    });
+    match = await persistMatchState(match);
     await repositories.auditLogs.insert(createAuditLogEntry(
       user.id,
       'match',
@@ -283,24 +285,20 @@ function createMatchmakingController(options) {
   }
 
   async function handleMarkReady(response, user, body) {
-    const match = await requireOwnedMatch(user.id, body.match_id);
+    let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
 
-    const player = findMatchPlayer(match, user.id);
-    touchMatchPlayer(match, user.id);
-    player.worldStatus = 'ready';
-    player.readyAt = Date.now();
-    player.updatedAt = Date.now();
-    const bothReady = Array.isArray(match.players)
-      && match.players.length === 2
-      && match.players.every((entry) => entry.worldStatus === 'ready' || entry.worldStatus === 'running' || entry.worldStatus === 'finished');
-    if (bothReady && !match.countdownTargetEpochMillis) {
-      match.state = 'countdown';
-      match.countdownTargetEpochMillis = Date.now() + 10000;
-    }
-    await persistMatchState(match);
+    const now = Date.now();
+    match = await updatePlayerState(match.id, user.id, {
+      connected: true,
+      lastSeenAt: now,
+      worldStatus: 'ready',
+      readyAt: now,
+      updatedAt: now
+    });
+    match = await persistMatchState(match);
     await repositories.auditLogs.insert(createAuditLogEntry(
       user.id,
       'match',
@@ -317,7 +315,7 @@ function createMatchmakingController(options) {
   }
 
   async function handleReportActivity(response, user, body) {
-    const match = await requireOwnedMatch(user.id, body.match_id);
+    let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
@@ -362,25 +360,58 @@ function createMatchmakingController(options) {
       }
     }
 
-    await persistMatchState(match);
+    match = await persistMatchState(match);
     return sendSnapshot(response, match);
   }
 
   async function handleHeartbeat(response, user, body) {
-    const match = await requireOwnedMatch(user.id, body.match_id);
+    let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
 
-    const player = await heartbeatMatch(match, user.id);
+    match = await touchPlayerPresence(match, user.id);
+    match = await persistMatchState(match);
+    const player = findMatchPlayer(match, user.id);
     if (!player) {
       return sendJson(response, 404, { error: 'Player not found in match' });
     }
     return sendSnapshot(response, match);
   }
 
+  async function updatePlayerState(matchId, playerId, fields) {
+    if (typeof repositories.matches.updatePlayer === 'function') {
+      const updatedMatch = await repositories.matches.updatePlayer(matchId, playerId, fields);
+      if (updatedMatch) {
+        return updatedMatch;
+      }
+    }
+    const fallbackMatch = await findMatchById(matchId);
+    const player = fallbackMatch ? findMatchPlayer(fallbackMatch, playerId) : null;
+    if (player) {
+      Object.assign(player, fields);
+    }
+    return fallbackMatch;
+  }
+
+  async function touchPlayerPresence(match, userId) {
+    const now = Date.now();
+    if (typeof repositories.matches.updatePlayer === 'function') {
+      const updatedMatch = await repositories.matches.updatePlayer(match.id, userId, {
+        connected: true,
+        lastSeenAt: now,
+        updatedAt: now
+      });
+      if (updatedMatch) {
+        return updatedMatch;
+      }
+    }
+    touchMatchPlayer(match, userId);
+    return match;
+  }
+
   async function handleReportFinish(response, user, body) {
-    const match = await requireOwnedMatch(user.id, body.match_id);
+    let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
