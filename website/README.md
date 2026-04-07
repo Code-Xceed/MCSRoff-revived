@@ -10,6 +10,7 @@ It provides:
 - device-code linking for the Minecraft mod
 - revocable access and refresh tokens for the mod
 - backend-authoritative queue, match sync, countdown, activity, heartbeat, and finish reporting
+- request IDs, structured request logs, and route rate limiting for operational hardening
 - optional Postgres/Supabase runtime storage path for production migration
 
 ## Run
@@ -42,6 +43,24 @@ The service starts on:
 
 - website: `http://localhost:8080`
 - mod auth API: `http://localhost:8080/mod-auth`
+
+## Operational Hardening
+
+The backend now adds:
+
+- `X-Request-Id` on every response
+- structured JSON request logs to stdout
+- basic security headers
+- in-memory rate limiting on auth pages, mod auth routes, and match API routes
+
+Rate-limit knobs can be overridden in `website/.env`:
+
+- `AUTH_RATE_LIMIT_WINDOW_MS`
+- `AUTH_RATE_LIMIT_MAX`
+- `MATCH_RATE_LIMIT_WINDOW_MS`
+- `MATCH_RATE_LIMIT_MAX`
+- `PAGE_RATE_LIMIT_WINDOW_MS`
+- `PAGE_RATE_LIMIT_MAX`
 
 ## Mod Defaults
 

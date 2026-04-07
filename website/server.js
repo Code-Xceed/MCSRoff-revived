@@ -20,6 +20,12 @@ const {
   MATCH_PLAYER_STALE_MILLIS,
   MATCH_PRESTART_STALE_MILLIS,
   MATCH_RUNNING_STALE_MILLIS,
+  AUTH_RATE_LIMIT_WINDOW_MS,
+  AUTH_RATE_LIMIT_MAX,
+  MATCH_RATE_LIMIT_WINDOW_MS,
+  MATCH_RATE_LIMIT_MAX,
+  PAGE_RATE_LIMIT_WINDOW_MS,
+  PAGE_RATE_LIMIT_MAX,
   TABLES
 } = require('./src/config');
 const { createJsonStore } = require('./src/storage/jsonStore');
@@ -35,6 +41,9 @@ const { createMatchService } = require('./src/services/matchService');
 const { createAuthApiController } = require('./src/controllers/authApiController');
 const { createMatchmakingController } = require('./src/controllers/matchmakingController');
 const { createMatchStreamHub } = require('./src/services/matchStreamHub');
+const { createRequestContext } = require('./src/utils/requestContext');
+const { logInfo, logWarn, logError } = require('./src/utils/logger');
+const { createRateLimiter } = require('./src/services/rateLimiter');
 
 const storage = createJsonStore(DATA_DIR, TABLES);
 const repositories = createRepositories({
@@ -42,6 +51,7 @@ const repositories = createRepositories({
   store: storage
 });
 const matchStreamHub = createMatchStreamHub();
+const rateLimiter = createRateLimiter();
 const authService = createAuthService({
   repositories,
   parseCookies,
@@ -148,8 +158,24 @@ if (STORAGE_BACKEND === 'json') {
 
 const server = http.createServer(async (request, response) => {
   const requestUrl = new URL(request.url, BASE_URL);
+  const requestContext = createRequestContext(request, response);
+
+  response.on('finish', () => {
+    logInfo('request_completed', {
+      request_id: requestContext.id,
+      method: requestContext.method,
+      path: requestUrl.pathname,
+      status_code: response.statusCode,
+      duration_ms: Date.now() - requestContext.startedAt,
+      ip: requestContext.ip
+    });
+  });
 
   try {
+    rateLimiter.prune(Date.now());
+    if (!applyRouteRateLimit(request, response, requestUrl)) {
+      return;
+    }
     if (request.method === 'GET' && requestUrl.pathname === '/styles.css') {
       return serveStatic(response, `${PUBLIC_DIR}/styles.css`, 'text/css; charset=utf-8');
     }
@@ -157,7 +183,8 @@ const server = http.createServer(async (request, response) => {
       return sendJson(response, 200, {
         ok: true,
         service: 'mcsroff-auth-site',
-        storage_backend: STORAGE_BACKEND
+        storage_backend: STORAGE_BACKEND,
+        request_id: requestContext.id
       });
     }
     if (request.method === 'GET' && (requestUrl.pathname === '/' || requestUrl.pathname === '/dashboard')) {
@@ -213,23 +240,110 @@ const server = http.createServer(async (request, response) => {
       <section class="card">
         <h1>Page not found</h1>
         <p class="helper">The route you requested does not exist.</p>
+        <p class="helper">Request ID: <code>${escapeHtml(requestContext.id)}</code></p>
         <p><a class="button secondary" href="/">Return home</a></p>
       </section>
     `));
   } catch (error) {
-    console.error('[auth-site] request failed', error);
+    logError('request_failed', {
+      request_id: requestContext.id,
+      method: requestContext.method,
+      path: requestUrl.pathname,
+      ip: requestContext.ip,
+      error_message: error && error.message ? error.message : 'Unknown error',
+      error_stack: error && error.stack ? error.stack : ''
+    });
     sendHtml(response, 500, renderPage('Server Error', `
       <section class="card">
         <h1>Server error</h1>
         <p class="helper">${escapeHtml(error.message || 'Unexpected failure')}</p>
+        <p class="helper">Request ID: <code>${escapeHtml(requestContext.id)}</code></p>
       </section>
     `));
   }
 });
 
 server.listen(PORT, HOST, () => {
-  console.log(`[auth-site] listening on ${BASE_URL} using ${STORAGE_BACKEND} storage`);
+  logInfo('server_listening', {
+    base_url: BASE_URL,
+    host: HOST,
+    port: PORT,
+    storage_backend: STORAGE_BACKEND
+  });
 });
+
+function applyRouteRateLimit(request, response, requestUrl) {
+  const rule = resolveRateLimitRule(request.method, requestUrl.pathname);
+  if (!rule) {
+    return true;
+  }
+  const bucketKey = `${rule.bucket}:${request.context.ip}`;
+  const result = rateLimiter.evaluate(bucketKey, rule.limit, rule.windowMs, Date.now());
+  rateLimiter.applyHeaders(response, result);
+  if (result.allowed) {
+    return true;
+  }
+  logWarn('rate_limit_exceeded', {
+    request_id: request.context.id,
+    method: request.method || 'GET',
+    path: requestUrl.pathname,
+    ip: request.context.ip,
+    bucket: rule.bucket,
+    limit: rule.limit,
+    window_ms: rule.windowMs
+  });
+  sendJson(response, 429, {
+    error: 'rate_limited',
+    request_id: request.context.id
+  });
+  return false;
+}
+
+function resolveRateLimitRule(method, pathName) {
+  if (method === 'POST' && (pathName === '/register' || pathName === '/login' || pathName === '/logout')) {
+    return {
+      bucket: `auth-page:${pathName}`,
+      limit: AUTH_RATE_LIMIT_MAX,
+      windowMs: AUTH_RATE_LIMIT_WINDOW_MS
+    };
+  }
+  if ((pathName === '/mod-auth/device/start' || pathName === '/mod-auth/device/poll' || pathName === '/mod-auth/refresh') && method === 'POST') {
+    return {
+      bucket: `mod-auth:${pathName}`,
+      limit: AUTH_RATE_LIMIT_MAX * 3,
+      windowMs: AUTH_RATE_LIMIT_WINDOW_MS
+    };
+  }
+  if (pathName === '/mod-auth/me' && method === 'GET') {
+    return {
+      bucket: 'mod-auth:me',
+      limit: AUTH_RATE_LIMIT_MAX * 4,
+      windowMs: AUTH_RATE_LIMIT_WINDOW_MS
+    };
+  }
+  if (pathName === '/matchmaker' && method === 'POST') {
+    return {
+      bucket: 'match-api',
+      limit: MATCH_RATE_LIMIT_MAX,
+      windowMs: MATCH_RATE_LIMIT_WINDOW_MS
+    };
+  }
+  if (pathName === '/mod-stream/match' && method === 'GET') {
+    return {
+      bucket: 'match-stream',
+      limit: MATCH_RATE_LIMIT_MAX,
+      windowMs: MATCH_RATE_LIMIT_WINDOW_MS
+    };
+  }
+  if (method === 'GET' && (pathName === '/' || pathName === '/dashboard' || pathName === '/register' || pathName === '/login' || pathName === '/link' || pathName === '/health')) {
+    return {
+      bucket: `page:${pathName}`,
+      limit: PAGE_RATE_LIMIT_MAX,
+      windowMs: PAGE_RATE_LIMIT_WINDOW_MS
+    };
+  }
+  return null;
+}
 
 async function handleDashboard(request, response, requestUrl) {
   const user = await getCurrentWebUser(request);
