@@ -9,6 +9,10 @@ const { spawn } = require('child_process');
 
 const USE_EXTERNAL_SERVER = process.env.MCSR_AUTH_EXTERNAL === '1';
 let runtimeBaseUrl = process.env.MCSR_AUTH_BASE_URL || 'http://127.0.0.1:8080';
+const TEST_MATCH_FILTER_ID = process.env.MCSR_TEST_MATCH_FILTER_ID
+  || `mcsr_test_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
+const TEST_MATCH_SEED_TYPE_LABEL = process.env.MCSR_TEST_MATCH_SEED_TYPE_LABEL
+  || `Test Queue ${TEST_MATCH_FILTER_ID.slice(-8)}`;
 
 async function main() {
   const port = USE_EXTERNAL_SERVER ? null : (19200 + Math.floor(Math.random() * 500));
@@ -128,8 +132,8 @@ async function main() {
     const requeueSnapshot = await matchmaker(playerOne.accessToken, {
       action: 'join_queue',
       seed_mode: 'MATCH',
-      seed_type_label: 'ZSG Mapless',
-      filter_ids: ['zsg']
+      seed_type_label: TEST_MATCH_SEED_TYPE_LABEL,
+      filter_ids: [TEST_MATCH_FILTER_ID]
     });
     assert.strictEqual(requeueSnapshot.queue_status, 'searching', 'requeue should not revive the previous opponent');
     assert(!requeueSnapshot.match, 'requeue unexpectedly returned the previous active match');
@@ -262,16 +266,16 @@ async function createMatchedPair(playerOne, playerTwo) {
   const joinOne = await matchmaker(playerOne.accessToken, {
     action: 'join_queue',
     seed_mode: 'MATCH',
-    seed_type_label: 'ZSG Mapless',
-    filter_ids: ['zsg']
+    seed_type_label: TEST_MATCH_SEED_TYPE_LABEL,
+    filter_ids: [TEST_MATCH_FILTER_ID]
   });
   assert.strictEqual(joinOne.queue_status, 'searching', 'first player should still be searching');
 
   const joinOneRepeat = await matchmaker(playerOne.accessToken, {
     action: 'join_queue',
     seed_mode: 'MATCH',
-    seed_type_label: 'ZSG Mapless',
-    filter_ids: ['zsg']
+    seed_type_label: TEST_MATCH_SEED_TYPE_LABEL,
+    filter_ids: [TEST_MATCH_FILTER_ID]
   });
   assert.strictEqual(joinOneRepeat.queue_status, 'searching', 'repeated queue join should remain searching before an opponent is found');
   assert(!joinOneRepeat.match, 'repeated queue join should not synthesize a match before an opponent is found');
@@ -279,8 +283,8 @@ async function createMatchedPair(playerOne, playerTwo) {
   const joinTwo = await matchmaker(playerTwo.accessToken, {
     action: 'join_queue',
     seed_mode: 'MATCH',
-    seed_type_label: 'ZSG Mapless',
-    filter_ids: ['zsg']
+    seed_type_label: TEST_MATCH_SEED_TYPE_LABEL,
+    filter_ids: [TEST_MATCH_FILTER_ID]
   });
   assert(joinTwo.match, 'second player did not receive a match');
   assert(joinTwo.match.seed, 'shared seed missing from match');
@@ -289,8 +293,8 @@ async function createMatchedPair(playerOne, playerTwo) {
   const joinOneAgain = await matchmaker(playerOne.accessToken, {
     action: 'join_queue',
     seed_mode: 'MATCH',
-    seed_type_label: 'ZSG Mapless',
-    filter_ids: ['zsg']
+    seed_type_label: TEST_MATCH_SEED_TYPE_LABEL,
+    filter_ids: [TEST_MATCH_FILTER_ID]
   });
   assert(joinOneAgain.match, 'first player should recover the active match instead of requeueing');
   assert.strictEqual(joinOneAgain.match.id, joinTwo.match.id, 'recovered match id mismatch for first player');

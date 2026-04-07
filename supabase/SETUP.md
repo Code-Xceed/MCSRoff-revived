@@ -1,76 +1,54 @@
-# Supabase Setup
+# Supabase Runtime Setup
 
-Apply [schema.sql](/C:/Users/Aditya/Desktop/MCSR%20OFFLINE/supabase/schema.sql) in the Supabase SQL Editor.
+This project now uses the website/backend as the auth and match authority. Supabase is the Postgres runtime store behind that backend.
 
-## Use These Project Values
+## Required Project Values
 
-- `Project URL`: `https://uoqolyihlfnscikszxwc.supabase.co`
-- `Edge Function URL`: `https://uoqolyihlfnscikszxwc.supabase.co/functions/v1/matchmaker`
-- `Publishable key`: use in the mod config
-- `Anon JWT key`: optional for debugging; the mod should prefer the publishable key
+- `Project URL`: `https://YOUR_PROJECT_REF.supabase.co`
+- `service_role` key: used only by the website/backend in `website/.env`
+- `publishable` key: optional for future client integrations, not required for the current website-auth flow
+
+Do not hardcode project-specific values into the mod source. Configure runtime values through:
+
+- `website/.env` for the backend
+- the mod config file or `MCSROFF_*` environment variables for the mod
 
 ## Dashboard Steps
 
-1. Open `Authentication -> Providers`.
-2. Enable `Anonymous` sign-ins.
-3. Open `SQL Editor`.
-4. Run [schema.sql](/C:/Users/Aditya/Desktop/MCSR%20OFFLINE/supabase/schema.sql).
-5. Open `Edge Functions -> matchmaker`.
-6. Use one function to own all sensitive match writes.
+1. Open Supabase `Project Settings -> API`.
+2. Copy the `Project URL`.
+3. Copy the legacy `service_role` key for backend use.
+4. Open `SQL Editor`.
+5. Run [schema.sql](schema.sql) if you need the original research schema.
+6. Run [runtime-postgres-schema.sql](../website/sql/runtime-postgres-schema.sql) for the current website/backend runtime.
+7. Reload PostgREST schema if needed:
 
-## Recommended Matchmaker Actions
+```sql
+NOTIFY pgrst, 'reload schema';
+```
 
-Use JSON `action` values:
+## Current Runtime Architecture
 
-- `join_queue`
-- `cancel_queue`
-- `poll_match`
-- `mark_world_generated`
-- `mark_ready`
-- `heartbeat`
-- `report_finish`
-- `abort_match`
+The live app uses:
 
-## Match Flow
+- website/backend auth sessions
+- backend-owned matchmaking and match lifecycle
+- Supabase/Postgres tables for users, sessions, queue state, matches, events, ratings, and audit logs
 
-1. Client anonymously signs in to Supabase Auth.
-2. Client ensures a `profiles` row exists.
-3. Client calls `matchmaker` with `join_queue`.
-4. Function either keeps player queued or creates a `matches` row and two `match_players` rows.
-5. Clients poll `poll_match` until state becomes `matched`.
-6. One function call assigns the FSG seed and shared match metadata.
-7. After local world creation, each client calls `mark_world_generated`.
-8. After both clients are generated and locked, each client calls `mark_ready`.
-9. Function writes one shared `countdown_target`.
-10. Both clients count down to the same timestamp.
-11. Finish and abort updates always go through the function.
+The mod does not directly own matchmaking state in Supabase.
 
-## What The Mod Should Read Directly
+## Validation
 
-Direct read access is fine for:
+After setting `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` in `website/.env`, validate with:
 
-- own `profiles` row
-- own `queue_entries` row
-- `matches` row if the player is in that match
-- `match_players` rows for that match
-- `match_events` rows for that match
+```powershell
+npm --prefix website run validate-postgres-runtime
+npm --prefix website run test-auth
+npm --prefix website run test-admin
+npm --prefix website run test-matchmaking
+```
 
-## What Must Stay In Edge Functions
+Then start the backend and confirm:
 
-Keep these server-side:
-
-- queue matching / queue claim
-- match creation
-- FSG seed assignment
-- writing `countdown_target`
-- winner selection
-- disconnect / abort resolution
-
-## Current Next Implementation Step
-
-Wire the mod to:
-
-- sign in anonymously
-- create/update `profiles`
-- call `matchmaker`
-- replace all dummy opponent / ready logic with real `matches` and `match_players` state
+- `/health` reports `storage_backend=postgres`
+- live two-client matchmaking writes rows into `matches`, `match_players`, `match_events`, `rating_history`, and `audit_logs`

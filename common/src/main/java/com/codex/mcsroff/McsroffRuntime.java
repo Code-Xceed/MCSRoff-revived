@@ -36,7 +36,11 @@ public final class McsroffRuntime {
         String backendBaseUrl = trimTrailingSlash(McsroffMod.getConfig().getBackendBaseUrl());
         backendApi = new BackendApi(backendBaseUrl + "/matchmaker", backendBaseUrl + "/mod-stream/match", "");
         fsgApi = new FsgApi(McsroffMod.getConfig().getFsgBaseUrl());
-        supabaseAuthApi = new SupabaseAuthApi(McsroffMod.getConfig().getSupabaseUrl(), McsroffMod.getConfig().getSupabasePublishableKey());
+        String supabaseUrl = trimTrailingSlash(McsroffMod.getConfig().getSupabaseUrl());
+        String supabasePublishableKey = McsroffMod.getConfig().getSupabasePublishableKey();
+        supabaseAuthApi = supabaseUrl.isEmpty() || supabasePublishableKey == null || supabasePublishableKey.trim().isEmpty()
+                ? null
+                : new SupabaseAuthApi(supabaseUrl, supabasePublishableKey.trim());
         webAuthApi = new WebAuthApi(McsroffMod.getConfig().getWebAuthApiBaseUrl());
         accountManager = new AccountManager(webAuthApi);
         matchManager = new MatchManager(backendApi, fsgApi);

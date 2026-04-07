@@ -15,7 +15,7 @@ This checklist is for the current stable build only. It is intentionally limited
 
 ## Database
 
-- Latest runtime schema from [runtime-postgres-schema.sql](/C:/Users/Aditya/Desktop/MCSR%20OFFLINE/website/sql/runtime-postgres-schema.sql) has been applied.
+- Latest runtime schema from [runtime-postgres-schema.sql](website/sql/runtime-postgres-schema.sql) has been applied.
 - `npm --prefix website run validate-postgres-runtime` passes.
 - Match rows, match player rows, rating history, and audit logs are being written during smoke tests.
 - A backup/export plan for Supabase runtime data is in place before release.
@@ -24,7 +24,7 @@ This checklist is for the current stable build only. It is intentionally limited
 
 - `.\gradlew.bat :common:compileJava :fabric:compileJava --no-daemon` passes.
 - `.\gradlew.bat :fabric:build --no-daemon` passes.
-- Release jar is [mcsroff-fabric-1.0.0-1.16.1.jar](/C:/Users/Aditya/Desktop/MCSR%20OFFLINE/fabric/build/libs/mcsroff-fabric-1.0.0-1.16.1.jar).
+- Release jar is [mcsroff-fabric-1.0.0-1.16.1.jar](fabric/build/libs/mcsroff-fabric-1.0.0-1.16.1.jar).
 - Website/backend has been restarted after the latest backend commit.
 
 ## Live Match Flow

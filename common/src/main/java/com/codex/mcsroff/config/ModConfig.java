@@ -16,12 +16,19 @@ import java.util.List;
 
 public final class ModConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
+    private static final String DEFAULT_BACKEND_BASE_URL = resolveSetting("mcsroff.backendBaseUrl", "MCSROFF_BACKEND_BASE_URL", "http://localhost:8080");
+    private static final String DEFAULT_WEB_AUTH_API_BASE_URL = resolveSetting("mcsroff.webAuthApiBaseUrl", "MCSROFF_WEB_AUTH_API_BASE_URL", "");
+    private static final String DEFAULT_WEB_APP_BASE_URL = resolveSetting("mcsroff.webAppBaseUrl", "MCSROFF_WEB_APP_BASE_URL", "");
+    private static final String DEFAULT_SUPABASE_URL = resolveSetting("mcsroff.supabaseUrl", "MCSROFF_SUPABASE_URL", "");
+    private static final String DEFAULT_SUPABASE_PUBLISHABLE_KEY = resolveSetting("mcsroff.supabasePublishableKey", "MCSROFF_SUPABASE_PUBLISHABLE_KEY", "");
+    private static final String DEFAULT_SUPABASE_FUNCTION_URL = resolveSetting("mcsroff.supabaseFunctionUrl", "MCSROFF_SUPABASE_FUNCTION_URL", "");
+    private static final String DEFAULT_FSG_BASE_URL = resolveSetting("mcsroff.fsgBaseUrl", "MCSROFF_FSG_BASE_URL", "https://www.filteredseed.com");
 
     private transient Path path;
 
-    private String backendBaseUrl = "http://localhost:8080";
-    private String webAuthApiBaseUrl = "http://localhost:8080/mod-auth";
-    private String webAppBaseUrl = "http://localhost:8080";
+    private String backendBaseUrl = DEFAULT_BACKEND_BASE_URL;
+    private String webAuthApiBaseUrl = defaultWebAuthApiBaseUrl(DEFAULT_BACKEND_BASE_URL);
+    private String webAppBaseUrl = defaultWebAppBaseUrl(DEFAULT_BACKEND_BASE_URL);
     private String modAccessToken = "";
     private String modRefreshToken = "";
     private String modUserId = "";
@@ -30,14 +37,14 @@ public final class ModConfig {
     private String modRankTier = "Unlinked";
     private int modElo;
     private long modAccessTokenExpiresAtEpochSeconds;
-    private String supabaseUrl = "https://uoqolyihlfnscikszxwc.supabase.co";
-    private String supabasePublishableKey = "sb_publishable_CuY3gbqRbthBLxWjpPJHWA_oN96YAOQ";
-    private String supabaseFunctionUrl = "https://uoqolyihlfnscikszxwc.supabase.co/functions/v1/matchmaker";
+    private String supabaseUrl = DEFAULT_SUPABASE_URL;
+    private String supabasePublishableKey = DEFAULT_SUPABASE_PUBLISHABLE_KEY;
+    private String supabaseFunctionUrl = defaultSupabaseFunctionUrl(DEFAULT_SUPABASE_URL);
     private String supabaseAccessToken = "";
     private String supabaseRefreshToken = "";
     private String supabaseUserId = "";
     private long supabaseAccessTokenExpiresAtEpochSeconds;
-    private String fsgBaseUrl = "https://www.filteredseed.com";
+    private String fsgBaseUrl = DEFAULT_FSG_BASE_URL;
     private String playerNameOverride = "";
     private SeedMode defaultSeedMode = SeedMode.MATCH;
     private List<String> defaultFilters = new ArrayList<String>(Arrays.asList("zsg"));
@@ -70,15 +77,9 @@ public final class ModConfig {
     }
 
     private void normalize() {
-        if (this.backendBaseUrl == null || this.backendBaseUrl.trim().isEmpty()) {
-            this.backendBaseUrl = "http://localhost:8080";
-        }
-        if (this.webAuthApiBaseUrl == null || this.webAuthApiBaseUrl.trim().isEmpty()) {
-            this.webAuthApiBaseUrl = this.backendBaseUrl + "/mod-auth";
-        }
-        if (this.webAppBaseUrl == null || this.webAppBaseUrl.trim().isEmpty()) {
-            this.webAppBaseUrl = "http://localhost:8080";
-        }
+        this.backendBaseUrl = normalizeUrlValue(this.backendBaseUrl, DEFAULT_BACKEND_BASE_URL);
+        this.webAuthApiBaseUrl = normalizeUrlValue(this.webAuthApiBaseUrl, defaultWebAuthApiBaseUrl(this.backendBaseUrl));
+        this.webAppBaseUrl = normalizeUrlValue(this.webAppBaseUrl, defaultWebAppBaseUrl(this.backendBaseUrl));
         if (this.modAccessToken == null) {
             this.modAccessToken = "";
         }
@@ -97,15 +98,9 @@ public final class ModConfig {
         if (this.modRankTier == null || this.modRankTier.trim().isEmpty()) {
             this.modRankTier = "Unlinked";
         }
-        if (this.supabaseUrl == null || this.supabaseUrl.trim().isEmpty()) {
-            this.supabaseUrl = "https://uoqolyihlfnscikszxwc.supabase.co";
-        }
-        if (this.supabasePublishableKey == null) {
-            this.supabasePublishableKey = "";
-        }
-        if (this.supabaseFunctionUrl == null || this.supabaseFunctionUrl.trim().isEmpty()) {
-            this.supabaseFunctionUrl = this.supabaseUrl + "/functions/v1/matchmaker";
-        }
+        this.supabaseUrl = normalizeUrlValue(this.supabaseUrl, DEFAULT_SUPABASE_URL);
+        this.supabasePublishableKey = normalizeTextValue(this.supabasePublishableKey, DEFAULT_SUPABASE_PUBLISHABLE_KEY);
+        this.supabaseFunctionUrl = normalizeUrlValue(this.supabaseFunctionUrl, defaultSupabaseFunctionUrl(this.supabaseUrl));
         if (this.supabaseAccessToken == null) {
             this.supabaseAccessToken = "";
         }
@@ -115,9 +110,7 @@ public final class ModConfig {
         if (this.supabaseUserId == null) {
             this.supabaseUserId = "";
         }
-        if (this.fsgBaseUrl == null || this.fsgBaseUrl.trim().isEmpty()) {
-            this.fsgBaseUrl = "https://www.filteredseed.com";
-        }
+        this.fsgBaseUrl = normalizeUrlValue(this.fsgBaseUrl, DEFAULT_FSG_BASE_URL);
         if (this.playerNameOverride == null) {
             this.playerNameOverride = "";
         }
@@ -274,6 +267,58 @@ public final class ModConfig {
         this.modRankTier = "Unlinked";
         this.modAccessTokenExpiresAtEpochSeconds = 0L;
         normalize();
+    }
+
+    private static String resolveSetting(String systemPropertyKey, String environmentKey, String fallbackValue) {
+        String value = System.getProperty(systemPropertyKey);
+        if (value == null || value.trim().isEmpty()) {
+            value = System.getenv(environmentKey);
+        }
+        if (value == null || value.trim().isEmpty()) {
+            return fallbackValue;
+        }
+        return value.trim();
+    }
+
+    private static String normalizeTextValue(String value, String fallbackValue) {
+        if (value == null || value.trim().isEmpty()) {
+            return fallbackValue == null ? "" : fallbackValue;
+        }
+        return value.trim();
+    }
+
+    private static String normalizeUrlValue(String value, String fallbackValue) {
+        String normalized = normalizeTextValue(value, fallbackValue);
+        if (normalized.endsWith("/")) {
+            return normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    private static String defaultWebAuthApiBaseUrl(String backendBaseUrl) {
+        String configured = normalizeUrlValue(DEFAULT_WEB_AUTH_API_BASE_URL, "");
+        if (!configured.isEmpty()) {
+            return configured;
+        }
+        String base = normalizeUrlValue(backendBaseUrl, DEFAULT_BACKEND_BASE_URL);
+        return base.isEmpty() ? "" : base + "/mod-auth";
+    }
+
+    private static String defaultWebAppBaseUrl(String backendBaseUrl) {
+        String configured = normalizeUrlValue(DEFAULT_WEB_APP_BASE_URL, "");
+        if (!configured.isEmpty()) {
+            return configured;
+        }
+        return normalizeUrlValue(backendBaseUrl, DEFAULT_BACKEND_BASE_URL);
+    }
+
+    private static String defaultSupabaseFunctionUrl(String supabaseUrl) {
+        String configured = normalizeUrlValue(DEFAULT_SUPABASE_FUNCTION_URL, "");
+        if (!configured.isEmpty()) {
+            return configured;
+        }
+        String base = normalizeUrlValue(supabaseUrl, "");
+        return base.isEmpty() ? "" : base + "/functions/v1/matchmaker";
     }
 
 }
