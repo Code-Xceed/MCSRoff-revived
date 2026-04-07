@@ -11,6 +11,8 @@ public final class MatchSession {
     private MatchPhase phase;
     private long runStartedAtMillis;
     private boolean finishReported;
+    private String worldId;
+    private boolean resumePending;
 
     public MatchSession(String matchId, String playerRole, SeedAssignment seedAssignment, MatchPhase phase, String seedTypeLabel, MatchOpponent opponent) {
         this.matchId = matchId;
@@ -21,6 +23,8 @@ public final class MatchSession {
         this.opponent = opponent;
         this.runStartedAtMillis = 0L;
         this.finishReported = false;
+        this.worldId = "";
+        this.resumePending = false;
     }
 
     public String getMatchId() {
@@ -69,5 +73,21 @@ public final class MatchSession {
 
     public void setFinishReported(boolean finishReported) {
         this.finishReported = finishReported;
+    }
+
+    public String getWorldId() {
+        return this.worldId;
+    }
+
+    public void setWorldId(String worldId) {
+        this.worldId = worldId == null ? "" : worldId;
+    }
+
+    public boolean isResumePending() {
+        return this.resumePending;
+    }
+
+    public void setResumePending(boolean resumePending) {
+        this.resumePending = resumePending;
     }
 }

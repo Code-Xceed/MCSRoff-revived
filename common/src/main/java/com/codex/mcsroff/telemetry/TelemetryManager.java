@@ -50,8 +50,15 @@ public final class TelemetryManager {
             return;
         }
         if (minecraft.player == null || minecraft.level == null) {
+            if (session.isResumePending()) {
+                return;
+            }
             requestForfeit(session);
             return;
+        }
+        if (session.isResumePending()) {
+            session.setResumePending(false);
+            McsroffRuntime.getMatchManager().persistCurrentSession();
         }
 
         McsroffRuntime.getMatchRealtimeClient().ensureStreaming(session.getMatchId());
@@ -177,6 +184,7 @@ public final class TelemetryManager {
         long startedAt = session.getRunStartedAtMillis();
         long finishTimeMs = startedAt > 0L ? Math.max(0L, now - startedAt) : 0L;
         session.setFinishReported(true);
+        McsroffRuntime.getMatchManager().updateFinishReported(true);
         this.finishSubmissionInFlight = true;
         this.pendingSnapshotFuture = McsroffRuntime.getAccountManager().executeAuthenticated(authSession ->
                 McsroffRuntime.getBackendApi().reportFinish(authSession, session.getMatchId(), finishTimeMs)
@@ -195,6 +203,7 @@ public final class TelemetryManager {
         } catch (Exception exception) {
             if (this.finishSubmissionInFlight) {
                 session.setFinishReported(false);
+                McsroffRuntime.getMatchManager().updateFinishReported(false);
             }
             if (this.forfeitSubmissionInFlight) {
                 this.forfeitRequested = false;
@@ -234,10 +243,10 @@ public final class TelemetryManager {
         }
 
         if ("finished".equalsIgnoreCase(snapshot.getState())) {
-            session.setPhase(MatchPhase.FINISHED);
+            McsroffRuntime.getMatchManager().updateCurrentPhase(MatchPhase.FINISHED);
             McsroffRuntime.getMatchRealtimeClient().stop();
         } else if ("aborted".equalsIgnoreCase(snapshot.getState())) {
-            session.setPhase(MatchPhase.ABORTED);
+            McsroffRuntime.getMatchManager().updateCurrentPhase(MatchPhase.ABORTED);
             McsroffRuntime.getMatchRealtimeClient().stop();
         }
 

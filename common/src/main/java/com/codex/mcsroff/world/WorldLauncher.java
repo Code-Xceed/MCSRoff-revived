@@ -46,6 +46,20 @@ public final class WorldLauncher {
         return worldId;
     }
 
+    public boolean worldExists(String worldId) {
+        if (worldId == null || worldId.trim().isEmpty()) {
+            return false;
+        }
+        return Minecraft.getInstance().getLevelSource().levelExists(worldId.trim());
+    }
+
+    public void loadExistingWorld(String worldId) {
+        if (!worldExists(worldId)) {
+            throw new IllegalArgumentException("World does not exist: " + worldId);
+        }
+        Minecraft.getInstance().loadLevel(worldId.trim());
+    }
+
     private static String createUniqueWorldId(Minecraft minecraft) {
         LevelStorageSource levelSource = minecraft.getLevelSource();
         String baseId = "mcsr_race_" + WORLD_ID_FORMAT.format(new Date());

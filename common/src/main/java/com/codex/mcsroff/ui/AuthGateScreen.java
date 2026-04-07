@@ -2,6 +2,7 @@ package com.codex.mcsroff.ui;
 
 import com.codex.mcsroff.McsroffRuntime;
 import com.codex.mcsroff.auth.AuthSession;
+import com.codex.mcsroff.net.RemoteMatchSnapshot;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
@@ -17,7 +18,7 @@ public final class AuthGateScreen extends Screen {
     private static final int PANEL_INSET = 0xAA3B3B3B;
 
     private final Screen lastScreen;
-    private CompletableFuture<AuthSession> bootstrapFuture;
+    private CompletableFuture<GateResolution> bootstrapFuture;
     private String statusLine = "Checking trusted account session...";
     private boolean redirected;
 
@@ -38,7 +39,15 @@ public final class AuthGateScreen extends Screen {
             }
         }));
 
-        this.bootstrapFuture = McsroffRuntime.getAccountManager().bootstrapSession();
+        this.bootstrapFuture = McsroffRuntime.getAccountManager().bootstrapSession().thenCompose(session -> {
+            if (session == null) {
+                return CompletableFuture.completedFuture(new GateResolution(null, null));
+            }
+            this.statusLine = "Checking for active match recovery...";
+            return McsroffRuntime.getAccountManager().executeAuthenticated(activeSession ->
+                    McsroffRuntime.getBackendApi().pollActiveMatch(activeSession)
+            ).handle((snapshot, throwable) -> new GateResolution(session, throwable == null ? snapshot : null));
+        });
     }
 
     @Override
@@ -48,12 +57,15 @@ public final class AuthGateScreen extends Screen {
         }
 
         try {
-            AuthSession session = this.bootstrapFuture.join();
+            GateResolution resolution = this.bootstrapFuture.join();
             this.redirected = true;
-            if (session != null) {
-                this.minecraft.setScreen(new McsroffMenuScreen(this.lastScreen));
-            } else {
+            if (resolution.session == null) {
                 this.minecraft.setScreen(AccountLinkScreen.required(this.lastScreen));
+            } else if (hasRecoverableMatch(resolution.snapshot)) {
+                this.minecraft.setScreen(new MatchRecoveryScreen(this.lastScreen, resolution.snapshot));
+            } else {
+                clearStaleActiveMatch();
+                this.minecraft.setScreen(new McsroffMenuScreen(this.lastScreen));
             }
         } catch (Exception exception) {
             this.statusLine = "Account check failed: " + unwrapMessage(exception);
@@ -119,6 +131,40 @@ public final class AuthGateScreen extends Screen {
             current = current.getCause();
         }
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    private static boolean hasRecoverableMatch(RemoteMatchSnapshot snapshot) {
+        if (snapshot == null || snapshot.getMatchId() == null || snapshot.getMatchId().isEmpty()) {
+            return false;
+        }
+        String state = snapshot.getState();
+        return "matched".equalsIgnoreCase(state)
+                || "world_generating".equalsIgnoreCase(state)
+                || "world_generated".equalsIgnoreCase(state)
+                || "countdown".equalsIgnoreCase(state)
+                || "running".equalsIgnoreCase(state);
+    }
+
+    private static void clearStaleActiveMatch() {
+        if (com.codex.mcsroff.McsroffMod.getConfig().getActiveMatch() == null) {
+            return;
+        }
+        com.codex.mcsroff.McsroffMod.getConfig().clearActiveMatch();
+        try {
+            com.codex.mcsroff.McsroffMod.getConfig().save();
+        } catch (java.io.IOException exception) {
+            com.codex.mcsroff.McsroffMod.LOGGER.warn("Failed to clear stale active match state", exception);
+        }
+    }
+
+    private static final class GateResolution {
+        private final AuthSession session;
+        private final RemoteMatchSnapshot snapshot;
+
+        private GateResolution(AuthSession session, RemoteMatchSnapshot snapshot) {
+            this.session = session;
+            this.snapshot = snapshot;
+        }
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

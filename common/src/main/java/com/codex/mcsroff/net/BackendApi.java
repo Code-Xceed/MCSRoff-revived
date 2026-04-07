@@ -63,6 +63,10 @@ public final class BackendApi {
         return invokeSnapshotAsync("poll_match", payload, session);
     }
 
+    public CompletableFuture<RemoteMatchSnapshot> pollActiveMatch(final AuthSession session) {
+        return invokeSnapshotAsync("poll_match", new JsonObject(), session);
+    }
+
     public CompletableFuture<RemoteMatchSnapshot> cancelQueue(final AuthSession session) {
         return invokeSnapshotAsync("cancel_queue", new JsonObject(), session);
     }
