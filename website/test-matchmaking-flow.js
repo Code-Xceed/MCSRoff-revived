@@ -11,8 +11,6 @@ const BASE_URL = process.env.MCSR_AUTH_BASE_URL || 'http://127.0.0.1:8080';
 const USE_EXTERNAL_SERVER = process.env.MCSR_AUTH_EXTERNAL === '1';
 
 async function main() {
-  const health = await getHealth();
-  const storageBackend = String(health.storage_backend || 'json').toLowerCase();
   const server = USE_EXTERNAL_SERVER ? null : spawn(process.execPath, ['server.js'], {
     cwd: __dirname,
     env: Object.assign({}, process.env, {
@@ -31,6 +29,8 @@ async function main() {
 
   try {
     await waitForHealth();
+    const health = await getHealth();
+    const storageBackend = String(health.storage_backend || 'json').toLowerCase();
 
     const playerOne = await createLinkedPlayer('host');
     const playerTwo = await createLinkedPlayer('opp');

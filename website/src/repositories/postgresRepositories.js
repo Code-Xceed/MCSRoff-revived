@@ -287,20 +287,10 @@ function createPostgresRepositories() {
   }
 
   async function replaceMatchChildren(match) {
-    await request('DELETE', 'match_players', {
-      params: {
-        match_id: `eq.${match.id}`
-      }
-    });
-    await request('DELETE', 'match_events', {
-      params: {
-        match_id: `eq.${match.id}`
-      }
-    });
-
     if (Array.isArray(match.players) && match.players.length > 0) {
       await request('POST', 'match_players', {
-        headers: { Prefer: 'return=minimal' },
+        headers: { Prefer: 'return=minimal,resolution=merge-duplicates' },
+        params: { on_conflict: 'match_id,player_id' },
         body: match.players.map((player) => ({
           match_id: match.id,
           player_id: player.playerId,
@@ -323,9 +313,26 @@ function createPostgresRepositories() {
       });
     }
 
+    if (Array.isArray(match.events) && match.events.length === 0) {
+      await request('DELETE', 'match_events', {
+        params: {
+          match_id: `eq.${match.id}`
+        }
+      });
+      return;
+    }
+
     if (Array.isArray(match.events) && match.events.length > 0) {
+      const minEventSeq = match.events.reduce((lowest, event) => Math.min(lowest, event.seq || 0), match.events[0].seq || 0);
+      await request('DELETE', 'match_events', {
+        params: {
+          match_id: `eq.${match.id}`,
+          seq: `lt.${minEventSeq}`
+        }
+      });
       await request('POST', 'match_events', {
-        headers: { Prefer: 'return=minimal' },
+        headers: { Prefer: 'return=minimal,resolution=merge-duplicates' },
+        params: { on_conflict: 'match_id,seq' },
         body: match.events.map((event) => ({
           match_id: match.id,
           seq: event.seq || 0,
