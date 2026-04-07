@@ -298,6 +298,16 @@ function createMatchmakingController(options) {
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
+    const player = findMatchPlayer(match, user.id);
+    if (!player) {
+      return sendJson(response, 404, { error: 'Player not found in match' });
+    }
+    if (isTerminalMatchState(match.state) || isStartedMatchState(match.state)) {
+      return sendSnapshot(response, match);
+    }
+    if (worldStatusRank(player.worldStatus) >= worldStatusRank('generated')) {
+      return sendSnapshot(response, match);
+    }
 
     const now = Date.now();
     match = await updatePlayerState(match.id, user.id, {
@@ -324,6 +334,16 @@ function createMatchmakingController(options) {
     let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
+    }
+    const player = findMatchPlayer(match, user.id);
+    if (!player) {
+      return sendJson(response, 404, { error: 'Player not found in match' });
+    }
+    if (isTerminalMatchState(match.state) || isStartedMatchState(match.state)) {
+      return sendSnapshot(response, match);
+    }
+    if (worldStatusRank(player.worldStatus) >= worldStatusRank('ready')) {
+      return sendSnapshot(response, match);
     }
 
     const now = Date.now();
@@ -491,6 +511,29 @@ function createMatchmakingController(options) {
       }
       matchStreamHub.publish(match.id, buildSnapshotResponse('matched', match));
     }
+  }
+
+  function worldStatusRank(status) {
+    switch (String(status || '').toLowerCase()) {
+      case 'queued': return 0;
+      case 'generating': return 1;
+      case 'generated': return 2;
+      case 'ready': return 3;
+      case 'running': return 4;
+      case 'finished': return 5;
+      case 'disconnected': return 6;
+      default: return 0;
+    }
+  }
+
+  function isStartedMatchState(state) {
+    const normalized = String(state || '').toLowerCase();
+    return normalized === 'countdown' || normalized === 'running';
+  }
+
+  function isTerminalMatchState(state) {
+    const normalized = String(state || '').toLowerCase();
+    return normalized === 'finished' || normalized === 'aborted';
   }
 
   return {

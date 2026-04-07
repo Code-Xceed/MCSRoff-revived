@@ -65,6 +65,13 @@ async function main() {
     });
     assert.strictEqual(heartbeatSnapshot.match.state, 'running', 'heartbeat should preserve running match state');
 
+    const lateGeneratedSnapshot = await matchmaker(playerOne.accessToken, {
+      action: 'mark_world_generated',
+      match_id: firstMatch.matchId
+    });
+    assert.strictEqual(lateGeneratedSnapshot.match.state, 'running', 'late generated update should not regress a running match');
+    assert(lateGeneratedSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.world_status === 'running'), 'late generated update should not downgrade local running status');
+
     const finishSnapshot = await matchmaker(playerOne.accessToken, {
       action: 'report_finish',
       match_id: firstMatch.matchId,
