@@ -35,83 +35,34 @@ async function main() {
     const playerOne = await createLinkedPlayer('host');
     const playerTwo = await createLinkedPlayer('opp');
 
-    const joinOne = await matchmaker(playerOne.accessToken, {
-      action: 'join_queue',
-      seed_mode: 'MATCH',
-      seed_type_label: 'ZSG Mapless',
-      filter_ids: ['zsg']
-    });
-    assert.strictEqual(joinOne.queue_status, 'searching', 'first player should still be searching');
-
-    const joinTwo = await matchmaker(playerTwo.accessToken, {
-      action: 'join_queue',
-      seed_mode: 'MATCH',
-      seed_type_label: 'ZSG Mapless',
-      filter_ids: ['zsg']
-    });
-    assert(joinTwo.match, 'second player did not receive a match');
-    assert(joinTwo.match.seed, 'shared seed missing from match');
-    assert.strictEqual(joinTwo.match.players.length, 2, 'expected two players in match');
-
-    const joinOneAgain = await matchmaker(playerOne.accessToken, {
-      action: 'join_queue',
-      seed_mode: 'MATCH',
-      seed_type_label: 'ZSG Mapless',
-      filter_ids: ['zsg']
-    });
-    assert(joinOneAgain.match, 'first player should recover the active match instead of requeueing');
-    assert.strictEqual(joinOneAgain.match.id, joinTwo.match.id, 'recovered match id mismatch for first player');
-
-    const pollOne = await matchmaker(playerOne.accessToken, {
-      action: 'poll_match',
-      match_id: joinTwo.match.id
-    });
-    assert.strictEqual(pollOne.match.id, joinTwo.match.id, 'both players should see same match id');
-    assert.strictEqual(pollOne.match.seed, joinTwo.match.seed, 'both players should see same shared seed');
-
-    await matchmaker(playerOne.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
-    const afterOneGenerated = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
+    const firstMatch = await startRunningMatch(playerOne, playerTwo);
+    const afterOneGenerated = firstMatch.afterOneGenerated;
     assert(afterOneGenerated.match.players.some((player) => player.world_status === 'generated'), 'generated state missing after first world generation');
-
-    await matchmaker(playerTwo.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
-    const beforeCountdown = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
-    assert.strictEqual(beforeCountdown.match.state, 'world_generated', 'countdown should not start until both ready');
-
-    const readySnapshots = await Promise.all([
-      matchmaker(playerOne.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id }),
-      matchmaker(playerTwo.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id })
-    ]);
-    const finalSnapshot = readySnapshots.find((snapshot) =>
-      snapshot.match && snapshot.match.state === 'countdown' && snapshot.match.countdown_target_epoch_millis > Date.now()
-    ) || await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'countdown', 5000);
-    assert.strictEqual(finalSnapshot.match.state, 'countdown', 'countdown did not start after both ready');
-    assert(finalSnapshot.match.countdown_target_epoch_millis > Date.now(), 'countdown target missing or invalid');
-
-    const runningSnapshot = await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'running', 15000);
+    const runningSnapshot = firstMatch.runningSnapshot;
     assert.strictEqual(runningSnapshot.match.state, 'running', 'match never transitioned to running');
 
     const activitySnapshot = await matchmaker(playerOne.accessToken, {
       action: 'report_activity',
-      match_id: joinTwo.match.id,
+      match_id: firstMatch.matchId,
       type: 'advancement',
       activity_key: 'minecraft:story/enter_the_nether',
       status_text: 'Entered Nether',
       chat_message: 'We Need to Go Deeper',
       advancement_id: 'minecraft:story/enter_the_nether'
     });
-    const opponentView = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
+    const opponentView = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: firstMatch.matchId });
     assert(activitySnapshot.match.events.length > 0, 'match event missing after activity report');
     assert(opponentView.match.players.some((player) => player.activity_status === 'Entered Nether'), 'opponent activity status did not propagate');
 
     const heartbeatSnapshot = await matchmaker(playerTwo.accessToken, {
       action: 'heartbeat',
-      match_id: joinTwo.match.id
+      match_id: firstMatch.matchId
     });
     assert.strictEqual(heartbeatSnapshot.match.state, 'running', 'heartbeat should preserve running match state');
 
     const finishSnapshot = await matchmaker(playerOne.accessToken, {
       action: 'report_finish',
-      match_id: joinTwo.match.id,
+      match_id: firstMatch.matchId,
       finish_time_ms: 1234567
     });
     assert.strictEqual(finishSnapshot.match.state, 'finished', 'finish did not finalize the match');
@@ -124,12 +75,23 @@ async function main() {
     assert(winnerProfile.elo > 1200, 'winner Elo did not increase');
     assert(loserProfile.elo < 1200, 'loser Elo did not decrease');
 
+    const secondMatch = await startRunningMatch(playerOne, playerTwo);
+    const forfeitSnapshot = await matchmaker(playerTwo.accessToken, {
+      action: 'forfeit_match',
+      match_id: secondMatch.matchId
+    });
+    assert.strictEqual(forfeitSnapshot.match.state, 'finished', 'forfeit did not finalize the match');
+    assert.strictEqual(forfeitSnapshot.match.winner_player_id, playerOne.userId, 'forfeit winner player id mismatch');
+    assert(forfeitSnapshot.match.players.some((player) => player.player_id === playerTwo.userId && player.result === 'loss'), 'forfeit loser result missing');
+    assert(forfeitSnapshot.match.events.some((event) => event.type === 'forfeit'), 'forfeit event missing');
+
     if (storageBackend === 'json') {
       const ratingHistory = readJsonTable('rating_history.json');
       const auditLogs = readJsonTable('audit_logs.json');
       assert(ratingHistory.filter((entry) => entry.matchId === finishSnapshot.match.id).length >= 2, 'rating history entries missing for finished match');
       assert(auditLogs.some((entry) => entry.matchId === finishSnapshot.match.id && entry.action === 'report_finish'), 'finish audit log missing for finished match');
       assert(auditLogs.some((entry) => entry.category === 'matchmaking' && entry.action === 'join_queue_matched' && entry.matchId === finishSnapshot.match.id), 'matchmade audit log missing');
+      assert(auditLogs.some((entry) => entry.matchId === forfeitSnapshot.match.id && entry.action === 'forfeit_match'), 'forfeit audit log missing');
     }
 
     const requeueSnapshot = await matchmaker(playerOne.accessToken, {
@@ -226,6 +188,66 @@ async function waitForMatchState(accessToken, matchId, expectedState, timeoutMil
     await sleep(500);
   }
   throw new Error(`Timed out waiting for match state ${expectedState}`);
+}
+
+async function startRunningMatch(playerOne, playerTwo) {
+  const joinOne = await matchmaker(playerOne.accessToken, {
+    action: 'join_queue',
+    seed_mode: 'MATCH',
+    seed_type_label: 'ZSG Mapless',
+    filter_ids: ['zsg']
+  });
+  assert.strictEqual(joinOne.queue_status, 'searching', 'first player should still be searching');
+
+  const joinTwo = await matchmaker(playerTwo.accessToken, {
+    action: 'join_queue',
+    seed_mode: 'MATCH',
+    seed_type_label: 'ZSG Mapless',
+    filter_ids: ['zsg']
+  });
+  assert(joinTwo.match, 'second player did not receive a match');
+  assert(joinTwo.match.seed, 'shared seed missing from match');
+  assert.strictEqual(joinTwo.match.players.length, 2, 'expected two players in match');
+
+  const joinOneAgain = await matchmaker(playerOne.accessToken, {
+    action: 'join_queue',
+    seed_mode: 'MATCH',
+    seed_type_label: 'ZSG Mapless',
+    filter_ids: ['zsg']
+  });
+  assert(joinOneAgain.match, 'first player should recover the active match instead of requeueing');
+  assert.strictEqual(joinOneAgain.match.id, joinTwo.match.id, 'recovered match id mismatch for first player');
+
+  const pollOne = await matchmaker(playerOne.accessToken, {
+    action: 'poll_match',
+    match_id: joinTwo.match.id
+  });
+  assert.strictEqual(pollOne.match.id, joinTwo.match.id, 'both players should see same match id');
+  assert.strictEqual(pollOne.match.seed, joinTwo.match.seed, 'both players should see same shared seed');
+
+  await matchmaker(playerOne.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
+  const afterOneGenerated = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
+  await matchmaker(playerTwo.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
+  const beforeCountdown = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
+  assert.strictEqual(beforeCountdown.match.state, 'world_generated', 'countdown should not start until both ready');
+
+  const readySnapshots = await Promise.all([
+    matchmaker(playerOne.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id }),
+    matchmaker(playerTwo.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id })
+  ]);
+  const finalSnapshot = readySnapshots.find((snapshot) =>
+    snapshot.match && snapshot.match.state === 'countdown' && snapshot.match.countdown_target_epoch_millis > Date.now()
+  ) || await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'countdown', 5000);
+  assert.strictEqual(finalSnapshot.match.state, 'countdown', 'countdown did not start after both ready');
+  assert(finalSnapshot.match.countdown_target_epoch_millis > Date.now(), 'countdown target missing or invalid');
+
+  const runningSnapshot = await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'running', 15000);
+  return {
+    matchId: joinTwo.match.id,
+    seed: joinTwo.match.seed,
+    afterOneGenerated,
+    runningSnapshot
+  };
 }
 
 async function waitForHealth() {

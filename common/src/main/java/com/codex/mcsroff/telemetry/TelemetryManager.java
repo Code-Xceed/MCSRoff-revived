@@ -37,6 +37,8 @@ public final class TelemetryManager {
     private String lastReportedActivityKey = "";
     private long lastReportedActivityAtMillis;
     private boolean finishSubmissionInFlight;
+    private boolean forfeitSubmissionInFlight;
+    private boolean forfeitRequested;
 
     public void onClientTick(Minecraft minecraft) {
         MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
@@ -44,7 +46,11 @@ public final class TelemetryManager {
             clearRuntimeState();
             return;
         }
-        if (minecraft == null || minecraft.player == null || minecraft.level == null) {
+        if (minecraft == null) {
+            return;
+        }
+        if (minecraft.player == null || minecraft.level == null) {
+            requestForfeit(session);
             return;
         }
 
@@ -190,9 +196,13 @@ public final class TelemetryManager {
             if (this.finishSubmissionInFlight) {
                 session.setFinishReported(false);
             }
+            if (this.forfeitSubmissionInFlight) {
+                this.forfeitRequested = false;
+            }
             this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
         } finally {
             this.finishSubmissionInFlight = false;
+            this.forfeitSubmissionInFlight = false;
             this.pendingSnapshotFuture = null;
         }
     }
@@ -271,7 +281,26 @@ public final class TelemetryManager {
         this.lastReportedActivityKey = "";
         this.lastReportedActivityAtMillis = 0L;
         this.finishSubmissionInFlight = false;
+        this.forfeitSubmissionInFlight = false;
+        this.forfeitRequested = false;
         this.pendingAdvancements.clear();
+    }
+
+    private void requestForfeit(MatchSession session) {
+        if (session == null || this.forfeitRequested || this.finishSubmissionInFlight || this.forfeitSubmissionInFlight) {
+            return;
+        }
+        if (!McsroffRuntime.getAccountManager().hasTrustedSession()) {
+            this.forfeitRequested = true;
+            return;
+        }
+
+        this.forfeitRequested = true;
+        this.forfeitSubmissionInFlight = true;
+        this.pendingSnapshotFuture = McsroffRuntime.getAccountManager().executeAuthenticated(authSession ->
+                McsroffRuntime.getBackendApi().forfeitMatch(authSession, session.getMatchId())
+        );
+        this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
     private static String getMatchTypeLabel(MatchSession session) {

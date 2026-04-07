@@ -111,6 +111,12 @@ public final class BackendApi {
         return invokeSnapshotAsync("report_finish", payload, session);
     }
 
+    public CompletableFuture<RemoteMatchSnapshot> forfeitMatch(final AuthSession session, final String matchId) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("match_id", matchId);
+        return invokeSnapshotAsync("forfeit_match", payload, session);
+    }
+
     private CompletableFuture<RemoteMatchSnapshot> invokeSnapshotAsync(final String action, final JsonObject payload, final AuthSession session) {
         return CompletableFuture.supplyAsync(() -> {
             try {

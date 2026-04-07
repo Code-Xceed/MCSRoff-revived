@@ -25,7 +25,8 @@ function createMatchmakingController(options) {
     requireOwnedMatch,
     touchMatchPlayer,
     persistMatchState,
-    reportMatchFinish
+    reportMatchFinish,
+    reportMatchForfeit
   } = options;
 
   async function handleMatchmaker(request, response) {
@@ -70,6 +71,9 @@ function createMatchmakingController(options) {
     }
     if (action === 'report_finish') {
       return handleReportFinish(response, user, body);
+    }
+    if (action === 'forfeit_match') {
+      return handleForfeitMatch(response, user, body);
     }
 
     return sendJson(response, 400, { error: 'Unknown action' });
@@ -420,6 +424,19 @@ function createMatchmakingController(options) {
     if (!outcome.ok) {
       const code = outcome.code === 'match_not_running' ? 409 : 400;
       return sendJson(response, code, { error: outcome.code });
+    }
+    return sendSnapshot(response, outcome.match);
+  }
+
+  async function handleForfeitMatch(response, user, body) {
+    let match = await requireOwnedMatch(user.id, body.match_id);
+    if (!match) {
+      return sendJson(response, 404, { error: 'Match not found' });
+    }
+
+    const outcome = await reportMatchForfeit(match, user.id, 'player_forfeit');
+    if (!outcome.ok) {
+      return sendJson(response, 400, { error: outcome.code });
     }
     return sendSnapshot(response, outcome.match);
   }

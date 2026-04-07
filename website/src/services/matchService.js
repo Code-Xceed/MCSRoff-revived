@@ -234,10 +234,11 @@ function createMatchService(options) {
 
     const matches = await repositories.matches.getAll();
     for (const match of matches) {
-      let changed = false;
-      if (expireDisconnectedMatch(match, now)) {
-        changed = true;
+      const resolution = await resolvePresenceTimeout(match, now);
+      if (resolution === 'finished') {
+        continue;
       }
+      let changed = resolution === 'aborted';
       const previousState = match.state;
       normalizeCountdownState(match);
       if (match.state !== previousState) {
@@ -325,17 +326,16 @@ function createMatchService(options) {
 
   function expireDisconnectedMatch(match, now) {
     if (!isMatchActiveState(match.state) || !Array.isArray(match.players)) {
-      return false;
+      return null;
     }
 
     const staleMillis = match.state === 'running' ? matchRunningStaleMillis : matchPrestartStaleMillis;
     const stalePlayer = match.players.find((player) => !player.lastSeenAt || (now - player.lastSeenAt) > staleMillis);
     if (!stalePlayer) {
-      return false;
+      return null;
     }
 
-    markMatchAborted(match, 'presence_timeout', stalePlayer.playerId);
-    return true;
+    return stalePlayer;
   }
 
   function markMatchAborted(match, reason, actorUserId) {
@@ -533,6 +533,110 @@ function createMatchService(options) {
     return { ok: true, match };
   }
 
+  async function resolvePresenceTimeout(match, now) {
+    const stalePlayer = expireDisconnectedMatch(match, now);
+    if (!stalePlayer) {
+      return null;
+    }
+    if (match.state === 'running') {
+      await finalizeForfeit(match, stalePlayer.playerId, 'presence_timeout', now);
+      return 'finished';
+    }
+    markMatchAborted(match, 'presence_timeout', stalePlayer.playerId);
+    return 'aborted';
+  }
+
+  async function reportMatchForfeit(match, userId, reason) {
+    if (!match || !findMatchPlayer(match, userId)) {
+      return { ok: false, code: 'player_not_found' };
+    }
+    if (match.state === 'finished') {
+      return { ok: true, match };
+    }
+    if (match.state !== 'running') {
+      markMatchAborted(match, reason || 'player_forfeit', userId);
+      await repositories.auditLogs.insert(createAuditLogEntry(
+        userId,
+        'match',
+        'forfeit_prestart',
+        'match',
+        match.id,
+        match.id,
+        { reason: reason || 'player_forfeit' },
+        Date.now()
+      ));
+      await repositories.matches.update(match);
+      return { ok: true, match };
+    }
+    await finalizeForfeit(match, userId, reason || 'player_forfeit', Date.now());
+    return { ok: true, match };
+  }
+
+  async function finalizeForfeit(match, forfeitingPlayerId, reason, now) {
+    if (!Array.isArray(match.players) || match.players.length !== 2) {
+      markMatchAborted(match, reason || 'player_forfeit', forfeitingPlayerId);
+      await repositories.matches.update(match);
+      return;
+    }
+
+    const forfeitingPlayer = match.players.find((player) => player.playerId === forfeitingPlayerId) || null;
+    const winner = match.players.find((player) => player.playerId !== forfeitingPlayerId) || null;
+    if (!forfeitingPlayer || !winner) {
+      markMatchAborted(match, reason || 'player_forfeit', forfeitingPlayerId);
+      await repositories.matches.update(match);
+      return;
+    }
+
+    forfeitingPlayer.connected = false;
+    forfeitingPlayer.worldStatus = 'disconnected';
+    forfeitingPlayer.activityStatus = 'Forfeited';
+    forfeitingPlayer.result = 'loss';
+    forfeitingPlayer.updatedAt = now;
+    winner.activityStatus = 'Opponent forfeited';
+    winner.result = 'win';
+    winner.updatedAt = now;
+
+    match.state = 'finished';
+    match.abortReason = '';
+    match.countdownTargetEpochMillis = 0;
+    match.winnerPlayerId = winner.playerId;
+    match.updatedAt = now;
+
+    if (!Array.isArray(match.events)) {
+      match.events = [];
+    }
+    if (!match.nextEventSeq) {
+      match.nextEventSeq = 1;
+    }
+    match.events.push({
+      seq: match.nextEventSeq++,
+      playerId: forfeitingPlayerId,
+      type: 'forfeit',
+      activityKey: reason || 'player_forfeit',
+      statusText: 'Forfeited',
+      chatMessage: `${forfeitingPlayer.displayName} forfeited the match`,
+      advancementId: '',
+      createdAt: now
+    });
+    trimMatchEvents(match);
+
+    await applyRankedMatchResult(match, winner.playerId);
+    await repositories.auditLogs.insert(createAuditLogEntry(
+      forfeitingPlayerId,
+      'match',
+      'forfeit_match',
+      'match',
+      match.id,
+      match.id,
+      {
+        reason: reason || 'player_forfeit',
+        winner_player_id: winner.playerId
+      },
+      now
+    ));
+    await repositories.matches.update(match);
+  }
+
   return {
     findCompatibleQueueEntry,
     intersectFilters,
@@ -550,7 +654,8 @@ function createMatchService(options) {
     abandonActiveMatchesForUser,
     touchMatchPlayer,
     heartbeatMatch,
-    reportMatchFinish
+    reportMatchFinish,
+    reportMatchForfeit
   };
 }
 

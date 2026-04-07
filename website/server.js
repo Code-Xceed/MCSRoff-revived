@@ -94,7 +94,8 @@ const {
   abandonActiveMatchesForUser,
   touchMatchPlayer,
   heartbeatMatch,
-  reportMatchFinish
+  reportMatchFinish,
+  reportMatchForfeit
 } = matchService;
 const authApiController = createAuthApiController({
   baseUrl: BASE_URL,
@@ -137,7 +138,8 @@ const matchmakingController = createMatchmakingController({
   persistMatchState,
   abandonActiveMatchesForUser,
   heartbeatMatch,
-  reportMatchFinish
+  reportMatchFinish,
+  reportMatchForfeit
 });
 
 if (STORAGE_BACKEND === 'json') {
