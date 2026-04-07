@@ -1,14 +1,25 @@
 'use strict';
 
+require('./src/utils/loadEnv').initializeRuntimeEnv();
+
 const assert = require('assert');
+const fs = require('fs');
+const path = require('path');
 const { spawn } = require('child_process');
 
 const BASE_URL = process.env.MCSR_AUTH_BASE_URL || 'http://127.0.0.1:8080';
 const USE_EXTERNAL_SERVER = process.env.MCSR_AUTH_EXTERNAL === '1';
 
 async function main() {
+  const health = await getHealth();
+  const storageBackend = String(health.storage_backend || 'json').toLowerCase();
   const server = USE_EXTERNAL_SERVER ? null : spawn(process.execPath, ['server.js'], {
     cwd: __dirname,
+    env: Object.assign({}, process.env, {
+      FSG_STATIC_SEED: process.env.FSG_STATIC_SEED || '123456789',
+      FSG_STATIC_FILTER: process.env.FSG_STATIC_FILTER || 'zsg',
+      FSG_STATIC_TOKEN: process.env.FSG_STATIC_TOKEN || 'test-token'
+    }),
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
@@ -42,6 +53,15 @@ async function main() {
     assert(joinTwo.match.seed, 'shared seed missing from match');
     assert.strictEqual(joinTwo.match.players.length, 2, 'expected two players in match');
 
+    const joinOneAgain = await matchmaker(playerOne.accessToken, {
+      action: 'join_queue',
+      seed_mode: 'MATCH',
+      seed_type_label: 'ZSG Mapless',
+      filter_ids: ['zsg']
+    });
+    assert(joinOneAgain.match, 'first player should recover the active match instead of requeueing');
+    assert.strictEqual(joinOneAgain.match.id, joinTwo.match.id, 'recovered match id mismatch for first player');
+
     const pollOne = await matchmaker(playerOne.accessToken, {
       action: 'poll_match',
       match_id: joinTwo.match.id
@@ -62,6 +82,9 @@ async function main() {
     assert.strictEqual(finalSnapshot.match.state, 'countdown', 'countdown did not start after both ready');
     assert(finalSnapshot.match.countdown_target_epoch_millis > Date.now(), 'countdown target missing or invalid');
 
+    const runningSnapshot = await waitForMatchState(playerOne.accessToken, joinTwo.match.id, 'running', 15000);
+    assert.strictEqual(runningSnapshot.match.state, 'running', 'match never transitioned to running');
+
     const activitySnapshot = await matchmaker(playerOne.accessToken, {
       action: 'report_activity',
       match_id: joinTwo.match.id,
@@ -75,6 +98,35 @@ async function main() {
     assert(activitySnapshot.match.events.length > 0, 'match event missing after activity report');
     assert(opponentView.match.players.some((player) => player.activity_status === 'Entered Nether'), 'opponent activity status did not propagate');
 
+    const heartbeatSnapshot = await matchmaker(playerTwo.accessToken, {
+      action: 'heartbeat',
+      match_id: joinTwo.match.id
+    });
+    assert.strictEqual(heartbeatSnapshot.match.state, 'running', 'heartbeat should preserve running match state');
+
+    const finishSnapshot = await matchmaker(playerOne.accessToken, {
+      action: 'report_finish',
+      match_id: joinTwo.match.id,
+      finish_time_ms: 1234567
+    });
+    assert.strictEqual(finishSnapshot.match.state, 'finished', 'finish did not finalize the match');
+    assert.strictEqual(finishSnapshot.match.winner_player_id, playerOne.userId, 'winner player id mismatch after finish');
+    assert(finishSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.result === 'win'), 'winner result missing');
+    assert(finishSnapshot.match.players.some((player) => player.player_id === playerTwo.userId && player.result === 'loss'), 'loser result missing');
+
+    const winnerProfile = await getMe(playerOne.accessToken);
+    const loserProfile = await getMe(playerTwo.accessToken);
+    assert(winnerProfile.elo > 1200, 'winner Elo did not increase');
+    assert(loserProfile.elo < 1200, 'loser Elo did not decrease');
+
+    if (storageBackend === 'json') {
+      const ratingHistory = readJsonTable('rating_history.json');
+      const auditLogs = readJsonTable('audit_logs.json');
+      assert(ratingHistory.filter((entry) => entry.matchId === finishSnapshot.match.id).length >= 2, 'rating history entries missing for finished match');
+      assert(auditLogs.some((entry) => entry.matchId === finishSnapshot.match.id && entry.action === 'report_finish'), 'finish audit log missing for finished match');
+      assert(auditLogs.some((entry) => entry.category === 'matchmaking' && entry.action === 'join_queue_matched' && entry.matchId === finishSnapshot.match.id), 'matchmade audit log missing');
+    }
+
     const requeueSnapshot = await matchmaker(playerOne.accessToken, {
       action: 'join_queue',
       seed_mode: 'MATCH',
@@ -85,9 +137,10 @@ async function main() {
     assert(!requeueSnapshot.match, 'requeue unexpectedly returned the previous active match');
 
     console.log('Matchmaking flow passed.');
-    console.log(`Match ID: ${finalSnapshot.match.id}`);
-    console.log(`Seed: ${finalSnapshot.match.seed}`);
-    console.log(`Countdown Target: ${finalSnapshot.match.countdown_target_epoch_millis}`);
+    console.log(`Match ID: ${finishSnapshot.match.id}`);
+    console.log(`Seed: ${finishSnapshot.match.seed}`);
+    console.log(`Winner Elo: ${winnerProfile.elo}`);
+    console.log(`Loser Elo: ${loserProfile.elo}`);
   } finally {
     await shutdown();
   }
@@ -143,6 +196,33 @@ async function matchmaker(accessToken, body) {
   return response.body;
 }
 
+async function getMe(accessToken) {
+  const response = await fetch(`${BASE_URL}/mod-auth/me`, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`
+    }
+  });
+  const text = await response.text();
+  const body = text ? JSON.parse(text) : {};
+  assert.strictEqual(response.status, 200, `me failed: ${JSON.stringify(body)}`);
+  return body;
+}
+
+async function waitForMatchState(accessToken, matchId, expectedState, timeoutMillis) {
+  const deadline = Date.now() + timeoutMillis;
+  while (Date.now() < deadline) {
+    const snapshot = await matchmaker(accessToken, {
+      action: 'heartbeat',
+      match_id: matchId
+    });
+    if (snapshot.match && snapshot.match.state === expectedState) {
+      return snapshot;
+    }
+    await sleep(500);
+  }
+  throw new Error(`Timed out waiting for match state ${expectedState}`);
+}
+
 async function waitForHealth() {
   const deadline = Date.now() + 15000;
   while (Date.now() < deadline) {
@@ -156,6 +236,15 @@ async function waitForHealth() {
     await sleep(300);
   }
   throw new Error('Matchmaking server did not become healthy in time');
+}
+
+async function getHealth() {
+  const response = await fetch(`${BASE_URL}/health`);
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`health failed: HTTP ${response.status} ${text}`);
+  }
+  return text ? JSON.parse(text) : {};
 }
 
 async function postJson(pathname, body, headers) {
@@ -201,6 +290,14 @@ function extractCookie(response, name) {
 
 function sleep(millis) {
   return new Promise((resolve) => setTimeout(resolve, millis));
+}
+
+function readJsonTable(fileName) {
+  const filePath = path.join(__dirname, 'data', fileName);
+  if (!fs.existsSync(filePath)) {
+    return [];
+  }
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
 main().catch((error) => {

@@ -52,3 +52,5 @@ run/
 .tmp-javap-*/
 website/data/*.json
 !website/data/.gitkeep
+website/.env
+website/runtime-export.sql

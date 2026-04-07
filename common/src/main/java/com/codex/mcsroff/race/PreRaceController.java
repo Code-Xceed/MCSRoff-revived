@@ -9,12 +9,14 @@ import com.codex.mcsroff.net.RemoteMatchSnapshot;
 import com.codex.mcsroff.ui.PreRaceCountdownScreen;
 import com.codex.mcsroff.ui.WorldPreparationScreen;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.TitleScreen;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 public final class PreRaceController {
     private static final long POLL_INTERVAL_MILLIS = 900L;
+    private static final long REALTIME_FRESHNESS_MILLIS = 2500L;
 
     private MatchSession activeSession;
     private CompletableFuture<RemoteMatchSnapshot> pendingBackendFuture;
@@ -25,6 +27,8 @@ public final class PreRaceController {
     private String localWorldStatus = "Generating world";
     private String opponentWorldStatus = "Waiting";
     private String localBackendStatus = "Waiting for backend sync";
+    private String abortReason = "";
+    private boolean aborted;
 
     public void armLocalStart(MatchSession session) {
         if (session == null) {
@@ -40,6 +44,8 @@ public final class PreRaceController {
         this.localWorldStatus = "Generating world";
         this.opponentWorldStatus = "Waiting";
         this.localBackendStatus = "Waiting for backend sync";
+        this.abortReason = "";
+        this.aborted = false;
         this.activeSession.setPhase(MatchPhase.WORLD_CREATING);
     }
 
@@ -49,7 +55,16 @@ public final class PreRaceController {
         }
 
         long now = System.currentTimeMillis();
+        consumeRealtimeSnapshot();
         consumeBackendResult();
+
+        McsroffRuntime.getMatchRealtimeClient().ensureStreaming(this.activeSession.getMatchId());
+
+        if (this.aborted || this.activeSession.getPhase() == MatchPhase.ABORTED) {
+            this.activeSession.setPhase(MatchPhase.ABORTED);
+            ensurePreparationScreen(minecraft);
+            return;
+        }
 
         if (!this.localWorldGenerated) {
             if (minecraft.level == null || minecraft.player == null) {
@@ -70,6 +85,8 @@ public final class PreRaceController {
             ensureCountdownScreen(minecraft);
             if (now >= this.countdownTargetMillis) {
                 this.activeSession.setPhase(MatchPhase.RUNNING);
+                this.activeSession.setRunStartedAtMillis(now);
+                this.activeSession.setFinishReported(false);
                 if (minecraft.screen instanceof PreRaceCountdownScreen) {
                     minecraft.setScreen(null);
                 }
@@ -85,7 +102,8 @@ public final class PreRaceController {
             return;
         }
 
-        if (this.pendingBackendFuture == null && now >= this.nextPollAtMillis) {
+        if (this.pendingBackendFuture == null && now >= this.nextPollAtMillis
+                && !McsroffRuntime.getMatchRealtimeClient().isFresh(now, REALTIME_FRESHNESS_MILLIS)) {
             requestPoll();
         }
     }
@@ -123,6 +141,25 @@ public final class PreRaceController {
 
     public String getOpponentWorldStatus() {
         return this.opponentWorldStatus;
+    }
+
+    public boolean isAborted() {
+        return this.aborted || (this.activeSession != null && this.activeSession.getPhase() == MatchPhase.ABORTED);
+    }
+
+    public String getAbortReason() {
+        return this.abortReason == null ? "" : this.abortReason;
+    }
+
+    public void quitAbortedMatch(Minecraft minecraft) {
+        McsroffRuntime.getMatchRealtimeClient().stop();
+        McsroffRuntime.getMatchManager().clearCurrentSession();
+        clearRuntimeState();
+        if (minecraft.level != null) {
+            minecraft.level.disconnect();
+        }
+        minecraft.clearLevel();
+        minecraft.setScreen(new TitleScreen());
     }
 
     private void requestWorldGenerated() {
@@ -179,9 +216,28 @@ public final class PreRaceController {
         }
     }
 
+    private void consumeRealtimeSnapshot() {
+        RemoteMatchSnapshot snapshot = McsroffRuntime.getMatchRealtimeClient().consumeLatestSnapshot();
+        if (snapshot != null) {
+            applySnapshot(snapshot);
+        }
+    }
+
     private void applySnapshot(RemoteMatchSnapshot snapshot) {
         if (snapshot == null) {
             this.localBackendStatus = "Waiting for backend sync";
+            return;
+        }
+
+        if ("aborted".equalsIgnoreCase(snapshot.getState())) {
+            this.aborted = true;
+            this.countdownTargetMillis = -1L;
+            this.localReadySent = false;
+            this.opponentWorldStatus = "Disconnected";
+            this.abortReason = humanizeAbortReason(snapshot.getAbortReason());
+            this.localBackendStatus = this.abortReason;
+            this.activeSession.setPhase(MatchPhase.ABORTED);
+            McsroffRuntime.getMatchRealtimeClient().stop();
             return;
         }
 
@@ -251,6 +307,8 @@ public final class PreRaceController {
         this.localWorldStatus = "Generating world";
         this.opponentWorldStatus = "Waiting";
         this.localBackendStatus = "Waiting for backend sync";
+        this.abortReason = "";
+        this.aborted = false;
     }
 
     private static int worldStage(String status) {
@@ -295,5 +353,21 @@ public final class PreRaceController {
             return "Disconnected";
         }
         return backendStatus;
+    }
+
+    private static String humanizeAbortReason(String backendReason) {
+        if (backendReason == null || backendReason.isEmpty()) {
+            return "Match unavailable";
+        }
+        if ("presence_timeout".equalsIgnoreCase(backendReason)) {
+            return "Opponent disconnected";
+        }
+        if ("player_cancelled".equalsIgnoreCase(backendReason)) {
+            return "Opponent cancelled";
+        }
+        if ("player_requeued".equalsIgnoreCase(backendReason)) {
+            return "Opponent left queue";
+        }
+        return backendReason;
     }
 }

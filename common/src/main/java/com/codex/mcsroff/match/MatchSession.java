@@ -9,6 +9,8 @@ public final class MatchSession {
     private final String seedTypeLabel;
     private final MatchOpponent opponent;
     private MatchPhase phase;
+    private long runStartedAtMillis;
+    private boolean finishReported;
 
     public MatchSession(String matchId, String playerRole, SeedAssignment seedAssignment, MatchPhase phase, String seedTypeLabel, MatchOpponent opponent) {
         this.matchId = matchId;
@@ -17,6 +19,8 @@ public final class MatchSession {
         this.phase = phase;
         this.seedTypeLabel = seedTypeLabel;
         this.opponent = opponent;
+        this.runStartedAtMillis = 0L;
+        this.finishReported = false;
     }
 
     public String getMatchId() {
@@ -49,5 +53,21 @@ public final class MatchSession {
 
     public void setPhase(MatchPhase phase) {
         this.phase = phase;
+    }
+
+    public long getRunStartedAtMillis() {
+        return this.runStartedAtMillis;
+    }
+
+    public void setRunStartedAtMillis(long runStartedAtMillis) {
+        this.runStartedAtMillis = runStartedAtMillis;
+    }
+
+    public boolean isFinishReported() {
+        return this.finishReported;
+    }
+
+    public void setFinishReported(boolean finishReported) {
+        this.finishReported = finishReported;
     }
 }

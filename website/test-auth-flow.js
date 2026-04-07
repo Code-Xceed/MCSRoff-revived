@@ -1,5 +1,7 @@
 'use strict';
 
+require('./src/utils/loadEnv').initializeRuntimeEnv();
+
 const assert = require('assert');
 const { spawn } = require('child_process');
 

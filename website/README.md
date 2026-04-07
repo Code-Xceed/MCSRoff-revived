@@ -9,6 +9,8 @@ It provides:
 - password-based sign-in
 - device-code linking for the Minecraft mod
 - revocable access and refresh tokens for the mod
+- backend-authoritative queue, match sync, countdown, activity, heartbeat, and finish reporting
+- optional Postgres/Supabase runtime storage path for production migration
 
 ## Run
 
@@ -17,11 +19,23 @@ cd website
 npm start
 ```
 
+The server automatically loads `website/.env` if present.
+
 Smoke-test the full local auth flow:
 
 ```powershell
 cd website
 npm run test-auth
+```
+
+Smoke-test the full match lifecycle with a deterministic local FSG seed:
+
+```powershell
+cd website
+$env:FSG_STATIC_SEED="123456789"
+$env:FSG_STATIC_FILTER="zsg"
+$env:FSG_STATIC_TOKEN="test-token"
+npm run test-matchmaking
 ```
 
 The service starts on:
@@ -55,8 +69,29 @@ Mod auth API:
 - `POST /mod-auth/refresh`
 - `GET /mod-auth/me`
 
+Match API:
+
+- `POST /matchmaker`
+  - `join_queue`
+  - `poll_match`
+  - `cancel_queue`
+  - `mark_world_generated`
+  - `mark_ready`
+  - `heartbeat`
+  - `report_activity`
+  - `report_finish`
+
 ## Storage
 
 Data is stored locally in JSON files under `website/data`.
 
 This is good for local development and integration testing. Before public deployment, move these records to a real database and a properly managed backend runtime.
+
+For the production migration path, set `STORAGE_BACKEND=postgres` and provide either:
+
+- `DATABASE_URL`
+- or `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`
+
+Activation guide:
+
+- [POSTGRES_ACTIVATION.md](/C:/Users/Aditya/Desktop/MCSR%20OFFLINE/website/POSTGRES_ACTIVATION.md)

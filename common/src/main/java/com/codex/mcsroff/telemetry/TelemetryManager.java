@@ -24,7 +24,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class TelemetryManager {
-    private static final long POLL_INTERVAL_MILLIS = 900L;
+    private static final long HEARTBEAT_INTERVAL_MILLIS = 4000L;
+    private static final long REALTIME_FRESHNESS_MILLIS = 3500L;
     private final Queue<LocalAdvancementUpdate> pendingAdvancements = new ConcurrentLinkedQueue<LocalAdvancementUpdate>();
 
     private CompletableFuture<RemoteMatchSnapshot> pendingSnapshotFuture;
@@ -35,6 +36,7 @@ public final class TelemetryManager {
     private String opponentStatus = "Started Match";
     private String lastReportedActivityKey = "";
     private long lastReportedActivityAtMillis;
+    private boolean finishSubmissionInFlight;
 
     public void onClientTick(Minecraft minecraft) {
         MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
@@ -46,13 +48,17 @@ public final class TelemetryManager {
             return;
         }
 
+        McsroffRuntime.getMatchRealtimeClient().ensureStreaming(session.getMatchId());
+        consumeRealtimeSnapshot(minecraft, session);
         consumeBackendResult(minecraft, session);
         if (this.pendingSnapshotFuture == null) {
             flushLocalSignals(minecraft, session);
         }
 
         long now = System.currentTimeMillis();
-        if (this.pendingSnapshotFuture == null && now >= this.nextPollAtMillis) {
+        if (this.pendingSnapshotFuture == null
+                && now >= this.nextPollAtMillis
+                && !McsroffRuntime.getMatchRealtimeClient().isFresh(now, REALTIME_FRESHNESS_MILLIS)) {
             requestPoll(session);
         }
     }
@@ -107,6 +113,10 @@ public final class TelemetryManager {
 
         LocalAdvancementUpdate update = this.pendingAdvancements.poll();
         if (update != null) {
+            if ("minecraft:end/kill_dragon".equals(update.getAdvancementId())) {
+                reportFinish(session);
+                return;
+            }
             String statusText = mapStatusFromAdvancement(update.getAdvancementId());
             reportActivity(session, "advancement", update.getAdvancementId(), statusText, update.getTitle(), update.getAdvancementId());
         }
@@ -117,9 +127,9 @@ public final class TelemetryManager {
             return;
         }
         this.pendingSnapshotFuture = McsroffRuntime.getAccountManager().executeAuthenticated(authSession ->
-                McsroffRuntime.getBackendApi().pollMatch(authSession, session.getMatchId())
+                McsroffRuntime.getBackendApi().heartbeat(authSession, session.getMatchId())
         );
-        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+        this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
     private void reportActivity(MatchSession session, String type, String activityKey, String statusText, String chatMessage, String advancementId) {
@@ -149,7 +159,23 @@ public final class TelemetryManager {
                         advancementId
                 )
         );
-        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+        this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
+    }
+
+    private void reportFinish(MatchSession session) {
+        if (session == null || session.isFinishReported() || !McsroffRuntime.getAccountManager().hasTrustedSession()) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long startedAt = session.getRunStartedAtMillis();
+        long finishTimeMs = startedAt > 0L ? Math.max(0L, now - startedAt) : 0L;
+        session.setFinishReported(true);
+        this.finishSubmissionInFlight = true;
+        this.pendingSnapshotFuture = McsroffRuntime.getAccountManager().executeAuthenticated(authSession ->
+                McsroffRuntime.getBackendApi().reportFinish(authSession, session.getMatchId(), finishTimeMs)
+        );
+        this.nextPollAtMillis = now + HEARTBEAT_INTERVAL_MILLIS;
     }
 
     private void consumeBackendResult(Minecraft minecraft, MatchSession session) {
@@ -161,9 +187,20 @@ public final class TelemetryManager {
             RemoteMatchSnapshot snapshot = this.pendingSnapshotFuture.join();
             applySnapshot(minecraft, session, snapshot);
         } catch (Exception exception) {
-            this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+            if (this.finishSubmissionInFlight) {
+                session.setFinishReported(false);
+            }
+            this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
         } finally {
+            this.finishSubmissionInFlight = false;
             this.pendingSnapshotFuture = null;
+        }
+    }
+
+    private void consumeRealtimeSnapshot(Minecraft minecraft, MatchSession session) {
+        RemoteMatchSnapshot snapshot = McsroffRuntime.getMatchRealtimeClient().consumeLatestSnapshot();
+        if (snapshot != null) {
+            applySnapshot(minecraft, session, snapshot);
         }
     }
 
@@ -186,6 +223,14 @@ public final class TelemetryManager {
             this.opponentStatus = opponentPlayer.getActivityStatus();
         }
 
+        if ("finished".equalsIgnoreCase(snapshot.getState())) {
+            session.setPhase(MatchPhase.FINISHED);
+            McsroffRuntime.getMatchRealtimeClient().stop();
+        } else if ("aborted".equalsIgnoreCase(snapshot.getState())) {
+            session.setPhase(MatchPhase.ABORTED);
+            McsroffRuntime.getMatchRealtimeClient().stop();
+        }
+
         List<RemoteMatchEvent> events = snapshot.getEvents();
         for (RemoteMatchEvent event : events) {
             if (event.getSequence() <= this.lastSeenEventSequence) {
@@ -200,7 +245,7 @@ public final class TelemetryManager {
             }
         }
 
-        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+        this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
     private void appendOpponentAdvancementToChat(Minecraft minecraft, MatchSession session, String chatMessage) {
@@ -225,6 +270,7 @@ public final class TelemetryManager {
         this.opponentStatus = "Started Match";
         this.lastReportedActivityKey = "";
         this.lastReportedActivityAtMillis = 0L;
+        this.finishSubmissionInFlight = false;
         this.pendingAdvancements.clear();
     }
 

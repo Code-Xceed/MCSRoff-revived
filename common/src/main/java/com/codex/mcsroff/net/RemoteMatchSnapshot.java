@@ -18,6 +18,7 @@ public final class RemoteMatchSnapshot {
     private final String fsgToken;
     private final String seedTypeLabel;
     private final String fsgFilterId;
+    private final String abortReason;
     private final SeedMode seedMode;
     private final long countdownTargetEpochMillis;
     private final List<RemoteMatchPlayer> players;
@@ -31,6 +32,7 @@ public final class RemoteMatchSnapshot {
             String fsgToken,
             String seedTypeLabel,
             String fsgFilterId,
+            String abortReason,
             SeedMode seedMode,
             long countdownTargetEpochMillis,
             List<RemoteMatchPlayer> players,
@@ -43,6 +45,7 @@ public final class RemoteMatchSnapshot {
         this.fsgToken = fsgToken;
         this.seedTypeLabel = seedTypeLabel;
         this.fsgFilterId = fsgFilterId;
+        this.abortReason = abortReason;
         this.seedMode = seedMode == null ? SeedMode.MATCH : seedMode;
         this.countdownTargetEpochMillis = countdownTargetEpochMillis;
         this.players = players == null ? Collections.<RemoteMatchPlayer>emptyList() : Collections.unmodifiableList(new ArrayList<RemoteMatchPlayer>(players));
@@ -75,6 +78,10 @@ public final class RemoteMatchSnapshot {
 
     public String getFsgFilterId() {
         return this.fsgFilterId;
+    }
+
+    public String getAbortReason() {
+        return this.abortReason;
     }
 
     public SeedMode getSeedMode() {
@@ -148,6 +155,7 @@ public final class RemoteMatchSnapshot {
                 getString(match, "fsg_token"),
                 getString(match, "seed_type_label"),
                 getString(match, "fsg_filter_id"),
+                getString(match, "abort_reason"),
                 parseSeedMode(getString(match, "seed_mode")),
                 getLong(match, "countdown_target_epoch_millis", 0L),
                 players,

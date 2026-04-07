@@ -6,6 +6,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonArray;
 
 import java.io.IOException;
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
@@ -14,15 +16,21 @@ import java.util.concurrent.CompletionException;
 
 public final class BackendApi {
     private final String baseUrl;
+    private final String streamBaseUrl;
     private final String publishableKey;
 
-    public BackendApi(String baseUrl, String publishableKey) {
+    public BackendApi(String baseUrl, String streamBaseUrl, String publishableKey) {
         this.baseUrl = baseUrl;
+        this.streamBaseUrl = streamBaseUrl;
         this.publishableKey = publishableKey;
     }
 
     public String getBaseUrl() {
         return this.baseUrl;
+    }
+
+    public String getMatchStreamUrl(String matchId) {
+        return this.streamBaseUrl + "?match_id=" + URLEncoder.encode(matchId == null ? "" : matchId, StandardCharsets.UTF_8);
     }
 
     public JsonObject invokeMatchmaker(String action, JsonObject payload, AuthSession session) throws IOException {
@@ -88,6 +96,19 @@ public final class BackendApi {
         payload.addProperty("chat_message", chatMessage);
         payload.addProperty("advancement_id", advancementId);
         return invokeSnapshotAsync("report_activity", payload, session);
+    }
+
+    public CompletableFuture<RemoteMatchSnapshot> heartbeat(final AuthSession session, final String matchId) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("match_id", matchId);
+        return invokeSnapshotAsync("heartbeat", payload, session);
+    }
+
+    public CompletableFuture<RemoteMatchSnapshot> reportFinish(final AuthSession session, final String matchId, final long finishTimeMs) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("match_id", matchId);
+        payload.addProperty("finish_time_ms", finishTimeMs);
+        return invokeSnapshotAsync("report_finish", payload, session);
     }
 
     private CompletableFuture<RemoteMatchSnapshot> invokeSnapshotAsync(final String action, final JsonObject payload, final AuthSession session) {

@@ -7,6 +7,7 @@ import com.mojang.blaze3d.systems.RenderSystem;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiComponent;
+import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.TextComponent;
 import net.minecraft.resources.ResourceLocation;
@@ -16,14 +17,40 @@ public final class WorldPreparationScreen extends Screen {
     private static final int FRAME_DARK = 0xFF2A2A2A;
     private static final int PANEL_FILL = 0xC4181818;
     private static final int PANEL_INSET = 0xAA3B3B3B;
+    private Button quitButton;
 
     public WorldPreparationScreen() {
         super(new TextComponent("World Preparation"));
     }
 
     @Override
+    protected void init() {
+        int buttonWidth = 132;
+        this.quitButton = this.addButton(new Button(
+                (this.width - buttonWidth) / 2,
+                (this.height / 2) + 74,
+                buttonWidth,
+                20,
+                new TextComponent("Quit Match"),
+                new Button.OnPress() {
+                    @Override
+                    public void onPress(Button button) {
+                        McsroffRuntime.getPreRaceController().quitAbortedMatch(Minecraft.getInstance());
+                    }
+                }
+        ));
+        this.quitButton.visible = false;
+        this.quitButton.active = false;
+    }
+
+    @Override
     public void tick() {
         McsroffRuntime.getPreRaceController().onClientTick(Minecraft.getInstance());
+        if (this.quitButton != null) {
+            boolean aborted = McsroffRuntime.getPreRaceController().isAborted();
+            this.quitButton.visible = aborted;
+            this.quitButton.active = aborted;
+        }
     }
 
     @Override
@@ -34,6 +61,7 @@ public final class WorldPreparationScreen extends Screen {
         String seedTypeLine = session == null ? "Preparing race world" : session.getSeedTypeLabel();
         String localStatus = McsroffRuntime.getPreRaceController().getLocalWorldStatus();
         String opponentStatus = McsroffRuntime.getPreRaceController().getOpponentWorldStatus();
+        boolean aborted = McsroffRuntime.getPreRaceController().isAborted();
         int panelWidth = 284;
         int panelHeight = 164;
         int panelX = (this.width - panelWidth) / 2;
@@ -56,9 +84,19 @@ public final class WorldPreparationScreen extends Screen {
         renderWrappedText(poseStack, opponentStatus, panelX + 128, panelY + 116, panelWidth - 158, 16777215, 2);
 
         renderInset(poseStack, panelX + 20, panelY + 140, panelWidth - 40, 14);
-        drawCenteredString(poseStack, this.font, new TextComponent("Both runners stay locked until both worlds are ready."), this.width / 2, panelY + 144, 10526880);
+        drawCenteredString(
+                poseStack,
+                this.font,
+                new TextComponent(aborted
+                        ? fit(McsroffRuntime.getPreRaceController().getAbortReason(), panelWidth - 50)
+                        : "Both runners stay locked until both worlds are ready."),
+                this.width / 2,
+                panelY + 144,
+                aborted ? 0xFFE38C8C : 10526880
+        );
 
         renderOpponentStatus(poseStack, session == null ? null : session.getOpponent(), opponentStatus);
+        super.render(poseStack, mouseX, mouseY, partialTick);
     }
 
     @Override

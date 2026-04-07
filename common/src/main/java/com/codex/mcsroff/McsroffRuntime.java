@@ -4,6 +4,7 @@ import com.codex.mcsroff.auth.AccountManager;
 import com.codex.mcsroff.match.MatchManager;
 import com.codex.mcsroff.net.BackendApi;
 import com.codex.mcsroff.net.FsgApi;
+import com.codex.mcsroff.net.MatchRealtimeClient;
 import com.codex.mcsroff.net.SupabaseAuthApi;
 import com.codex.mcsroff.net.WebAuthApi;
 import com.codex.mcsroff.race.PreRaceController;
@@ -19,6 +20,7 @@ public final class McsroffRuntime {
     private static WebAuthApi webAuthApi;
     private static AccountManager accountManager;
     private static MatchManager matchManager;
+    private static MatchRealtimeClient matchRealtimeClient;
     private static PreRaceController preRaceController;
     private static TelemetryManager telemetryManager;
     private static WorldLauncher worldLauncher;
@@ -31,12 +33,14 @@ public final class McsroffRuntime {
             return;
         }
 
-        backendApi = new BackendApi(trimTrailingSlash(McsroffMod.getConfig().getBackendBaseUrl()) + "/matchmaker", "");
+        String backendBaseUrl = trimTrailingSlash(McsroffMod.getConfig().getBackendBaseUrl());
+        backendApi = new BackendApi(backendBaseUrl + "/matchmaker", backendBaseUrl + "/mod-stream/match", "");
         fsgApi = new FsgApi(McsroffMod.getConfig().getFsgBaseUrl());
         supabaseAuthApi = new SupabaseAuthApi(McsroffMod.getConfig().getSupabaseUrl(), McsroffMod.getConfig().getSupabasePublishableKey());
         webAuthApi = new WebAuthApi(McsroffMod.getConfig().getWebAuthApiBaseUrl());
         accountManager = new AccountManager(webAuthApi);
         matchManager = new MatchManager(backendApi, fsgApi);
+        matchRealtimeClient = new MatchRealtimeClient(backendApi, accountManager);
         preRaceController = new PreRaceController();
         telemetryManager = new TelemetryManager();
         worldLauncher = new WorldLauncher();
@@ -75,6 +79,10 @@ public final class McsroffRuntime {
 
     public static MatchManager getMatchManager() {
         return matchManager;
+    }
+
+    public static MatchRealtimeClient getMatchRealtimeClient() {
+        return matchRealtimeClient;
     }
 
     public static PreRaceController getPreRaceController() {

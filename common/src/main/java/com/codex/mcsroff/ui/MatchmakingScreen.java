@@ -28,6 +28,7 @@ import java.util.concurrent.CompletableFuture;
 public final class MatchmakingScreen extends Screen {
     private static final long REDIRECT_COUNTDOWN_MILLIS = 3000L;
     private static final long POLL_INTERVAL_MILLIS = 1000L;
+    private static final long REALTIME_FRESHNESS_MILLIS = 2500L;
     private static final UUID OPPONENT_UUID = UUID.fromString("7a97bce6-8f18-4c86-a913-7d0ec408a677");
     private static final int FRAME_LIGHT = 0xFF6E6E6E;
     private static final int FRAME_DARK = 0xFF2A2A2A;
@@ -94,7 +95,12 @@ public final class MatchmakingScreen extends Screen {
     @Override
     public void tick() {
         long now = System.currentTimeMillis();
+        consumeRealtimeSnapshot();
         consumeBackendResult();
+
+        if (!this.activeMatchId.isEmpty()) {
+            McsroffRuntime.getMatchRealtimeClient().ensureStreaming(this.activeMatchId);
+        }
 
         if (!this.launchTriggered && this.redirectTargetMillis > 0L && now >= this.redirectTargetMillis) {
             beginWorldLaunch();
@@ -104,7 +110,7 @@ public final class MatchmakingScreen extends Screen {
         if (this.authSession != null && !this.launchTriggered && this.backendFuture == null && now >= this.nextPollAtMillis) {
             if (this.activeMatchId.isEmpty()) {
                 requestJoinQueue();
-            } else {
+            } else if (!McsroffRuntime.getMatchRealtimeClient().isFresh(now, REALTIME_FRESHNESS_MILLIS)) {
                 requestPollMatch();
             }
         }
@@ -135,6 +141,14 @@ public final class MatchmakingScreen extends Screen {
     @Override
     public void onClose() {
         cancelAndReturn();
+    }
+
+    @Override
+    public void removed() {
+        if (!this.launchTriggered) {
+            McsroffRuntime.getMatchRealtimeClient().stop();
+        }
+        super.removed();
     }
 
     private void requestJoinQueue() {
@@ -176,6 +190,13 @@ public final class MatchmakingScreen extends Screen {
             this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
         } finally {
             this.backendFuture = null;
+        }
+    }
+
+    private void consumeRealtimeSnapshot() {
+        RemoteMatchSnapshot snapshot = McsroffRuntime.getMatchRealtimeClient().consumeLatestSnapshot();
+        if (snapshot != null) {
+            applySnapshot(snapshot);
         }
     }
 
@@ -293,6 +314,7 @@ public final class MatchmakingScreen extends Screen {
     }
 
     private void cancelAndReturn() {
+        McsroffRuntime.getMatchRealtimeClient().stop();
         if (!this.launchTriggered && McsroffRuntime.getAccountManager().hasTrustedSession()) {
             McsroffRuntime.getAccountManager().executeAuthenticated(session ->
                     McsroffRuntime.getBackendApi().cancelQueue(session)
