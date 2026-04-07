@@ -42,7 +42,6 @@ public final class ModConfig {
     private SeedMode defaultSeedMode = SeedMode.MATCH;
     private List<String> defaultFilters = new ArrayList<String>(Arrays.asList("zsg"));
     private boolean debugMode;
-    private PersistedMatchState activeMatch;
 
     public static ModConfig load(Path path) throws IOException {
         if (Files.notExists(path)) {
@@ -127,9 +126,6 @@ public final class ModConfig {
         }
         if (this.defaultFilters == null || this.defaultFilters.isEmpty()) {
             this.defaultFilters = new ArrayList<String>(Arrays.asList("zsg"));
-        }
-        if (this.activeMatch != null && (this.activeMatch.getMatchId().isEmpty() || this.activeMatch.getSeed().isEmpty())) {
-            this.activeMatch = null;
         }
     }
 
@@ -225,10 +221,6 @@ public final class ModConfig {
         return this.debugMode;
     }
 
-    public PersistedMatchState getActiveMatch() {
-        return this.activeMatch;
-    }
-
     public void setDefaultSeedMode(SeedMode defaultSeedMode) {
         this.defaultSeedMode = defaultSeedMode;
         normalize();
@@ -284,13 +276,4 @@ public final class ModConfig {
         normalize();
     }
 
-    public void setActiveMatch(PersistedMatchState activeMatch) {
-        this.activeMatch = activeMatch;
-        normalize();
-    }
-
-    public void clearActiveMatch() {
-        this.activeMatch = null;
-        normalize();
-    }
 }

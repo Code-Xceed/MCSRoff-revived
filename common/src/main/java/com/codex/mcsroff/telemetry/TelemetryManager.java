@@ -50,15 +50,8 @@ public final class TelemetryManager {
             return;
         }
         if (minecraft.player == null || minecraft.level == null) {
-            if (session.isResumePending()) {
-                return;
-            }
             requestForfeit(session);
             return;
-        }
-        if (session.isResumePending()) {
-            session.setResumePending(false);
-            McsroffRuntime.getMatchManager().persistCurrentSession();
         }
 
         McsroffRuntime.getMatchRealtimeClient().ensureStreaming(session.getMatchId());

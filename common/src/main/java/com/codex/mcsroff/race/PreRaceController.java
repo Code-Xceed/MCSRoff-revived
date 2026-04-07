@@ -47,39 +47,6 @@ public final class PreRaceController {
         this.abortReason = "";
         this.aborted = false;
         this.activeSession.setPhase(MatchPhase.WORLD_CREATING);
-        this.activeSession.setResumePending(true);
-        McsroffRuntime.getMatchManager().persistCurrentSession();
-    }
-
-    public void recoverLocalStart(MatchSession session, RemoteMatchSnapshot snapshot) {
-        armLocalStart(session);
-        AuthSession authSession = McsroffRuntime.getAccountManager().getCurrentSession();
-        String localUserId = authSession == null ? "" : authSession.getUserId();
-        RemoteMatchPlayer localPlayer = null;
-        RemoteMatchPlayer opponentPlayer = null;
-        if (snapshot != null) {
-            for (RemoteMatchPlayer player : snapshot.getPlayers()) {
-                if (!localUserId.isEmpty() && localUserId.equals(player.getPlayerId())) {
-                    localPlayer = player;
-                } else {
-                    opponentPlayer = player;
-                }
-            }
-        }
-
-        if (localPlayer != null) {
-            this.localWorldStatus = humanizeWorldStatus(localPlayer.getWorldStatus());
-            this.localBackendStatus = this.localWorldStatus;
-            this.localWorldGenerated = worldStage(this.localWorldStatus) >= 2;
-            this.localReadySent = worldStage(this.localWorldStatus) >= 3;
-        }
-        if (opponentPlayer != null) {
-            this.opponentWorldStatus = humanizeWorldStatus(opponentPlayer.getWorldStatus());
-        }
-        if (snapshot != null && snapshot.getCountdownTargetEpochMillis() > 0L) {
-            this.countdownTargetMillis = snapshot.getCountdownTargetEpochMillis();
-            this.localReadySent = true;
-        }
     }
 
     public void onClientTick(Minecraft minecraft) {
@@ -108,8 +75,6 @@ public final class PreRaceController {
             this.localWorldStatus = "Generated";
             this.localBackendStatus = "Local world generated";
             this.activeSession.setPhase(MatchPhase.SPAWN_WAIT);
-            this.activeSession.setResumePending(false);
-            McsroffRuntime.getMatchManager().persistCurrentSession();
             requestWorldGenerated();
             ensurePreparationScreen(minecraft);
             return;
@@ -271,7 +236,6 @@ public final class PreRaceController {
             this.abortReason = humanizeAbortReason(snapshot.getAbortReason());
             this.localBackendStatus = this.abortReason;
             this.activeSession.setPhase(MatchPhase.ABORTED);
-            McsroffRuntime.getMatchManager().persistCurrentSession();
             McsroffRuntime.getMatchRealtimeClient().stop();
             return;
         }
