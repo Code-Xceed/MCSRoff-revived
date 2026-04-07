@@ -103,11 +103,22 @@ Match API:
   - `join_queue`
   - `poll_match`
   - `cancel_queue`
-  - `mark_world_generated`
-  - `mark_ready`
+  - `begin_world_load`
+  - `mark_world_loaded`
+  - `mark_ready_locked`
   - `heartbeat`
   - `report_activity`
   - `report_finish`
+
+The pre-race lifecycle is explicit:
+
+- `matched`
+- `world_generating`
+- `world_generated`
+- `countdown`
+- `running`
+
+Each client reports `begin_world_load` before local world generation starts, then `mark_world_loaded` only after the world is actually open and frozen on the waiting screen. Countdown begins only after both clients report `mark_ready_locked`.
 
 ## Storage
 

@@ -24,11 +24,12 @@ public final class PreRaceController {
     private long nextPollAtMillis = -1L;
     private long nextHeartbeatAtMillis = -1L;
     private long countdownTargetMillis = -1L;
-    private boolean localWorldGenerated;
-    private boolean localReadySent;
-    private String localWorldStatus = "Generating world";
-    private String opponentWorldStatus = "Waiting";
-    private String localBackendStatus = "Waiting for backend sync";
+    private boolean worldLoadRequested;
+    private boolean localWorldLoaded;
+    private boolean localReadyLockedSent;
+    private String localWorldStatusCode = "queued";
+    private String opponentWorldStatusCode = "queued";
+    private String localBackendStatus = "Waiting for world launch";
     private String abortReason = "";
     private boolean aborted;
 
@@ -42,14 +43,16 @@ public final class PreRaceController {
         this.nextPollAtMillis = System.currentTimeMillis() + 200L;
         this.nextHeartbeatAtMillis = System.currentTimeMillis() + 500L;
         this.countdownTargetMillis = -1L;
-        this.localWorldGenerated = false;
-        this.localReadySent = false;
-        this.localWorldStatus = "Generating world";
-        this.opponentWorldStatus = "Waiting";
-        this.localBackendStatus = "Waiting for backend sync";
+        this.worldLoadRequested = false;
+        this.localWorldLoaded = false;
+        this.localReadyLockedSent = false;
+        this.localWorldStatusCode = "queued";
+        this.opponentWorldStatusCode = "queued";
+        this.localBackendStatus = "Starting world generation";
         this.abortReason = "";
         this.aborted = false;
         this.activeSession.setPhase(MatchPhase.WORLD_CREATING);
+        requestBeginWorldLoad();
     }
 
     public void onClientTick(Minecraft minecraft) {
@@ -69,19 +72,19 @@ public final class PreRaceController {
             return;
         }
 
-        if (!this.localWorldGenerated) {
+        if (!this.localWorldLoaded) {
             if (minecraft.level == null || minecraft.player == null) {
                 if (this.pendingBackendFuture == null && now >= this.nextHeartbeatAtMillis) {
-                    requestHeartbeat("Waiting for local world");
+                    requestHeartbeat("Generating local world");
                 }
                 return;
             }
 
-            this.localWorldGenerated = true;
-            this.localWorldStatus = "Generated";
-            this.localBackendStatus = "Local world generated";
+            this.localWorldLoaded = true;
+            this.localWorldStatusCode = maxWorldStatus(this.localWorldStatusCode, "generated");
+            this.localBackendStatus = "Local world loaded";
             this.activeSession.setPhase(MatchPhase.SPAWN_WAIT);
-            requestWorldGenerated();
+            requestWorldLoaded();
             ensurePreparationScreen(minecraft);
             return;
         }
@@ -103,12 +106,12 @@ public final class PreRaceController {
         }
 
         if (this.pendingBackendFuture == null && now >= this.nextHeartbeatAtMillis) {
-            requestHeartbeat(this.countdownTargetMillis > 0L ? "Countdown synchronized" : "Waiting for opponent");
+            requestHeartbeat(this.countdownTargetMillis > 0L ? "Countdown synchronized" : "Waiting for opponent world");
             return;
         }
 
-        if (shouldSendReady()) {
-            requestReady();
+        if (shouldSendReadyLocked(minecraft)) {
+            requestReadyLocked();
             return;
         }
 
@@ -150,7 +153,7 @@ public final class PreRaceController {
     }
 
     public String getOpponentWorldStatus() {
-        return this.opponentWorldStatus;
+        return humanizeWorldStatus(this.opponentWorldStatusCode);
     }
 
     public boolean isAborted() {
@@ -173,25 +176,49 @@ public final class PreRaceController {
     }
 
     private void requestWorldGenerated() {
+        requestWorldLoaded();
+    }
+
+    private void requestBeginWorldLoad() {
         if (!McsroffRuntime.getAccountManager().hasTrustedSession()) {
             this.localBackendStatus = "Auth expired";
             return;
         }
+        if (this.worldLoadRequested) {
+            return;
+        }
+        this.worldLoadRequested = true;
+        this.localWorldStatusCode = maxWorldStatus(this.localWorldStatusCode, "generating");
+        this.localBackendStatus = "Registering world generation";
         this.pendingBackendFuture = McsroffRuntime.getAccountManager().executeAuthenticated(session ->
-                McsroffRuntime.getBackendApi().markWorldGenerated(session, this.activeSession.getMatchId())
+                McsroffRuntime.getBackendApi().beginWorldLoad(session, this.activeSession.getMatchId())
         );
         this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
     }
 
-    private void requestReady() {
+    private void requestWorldLoaded() {
         if (!McsroffRuntime.getAccountManager().hasTrustedSession()) {
             this.localBackendStatus = "Auth expired";
             return;
         }
-        this.localReadySent = true;
-        this.localBackendStatus = "Locking ready state";
+        this.localWorldStatusCode = maxWorldStatus(this.localWorldStatusCode, "generated");
+        this.localBackendStatus = "Syncing loaded world";
         this.pendingBackendFuture = McsroffRuntime.getAccountManager().executeAuthenticated(session ->
-                McsroffRuntime.getBackendApi().markReady(session, this.activeSession.getMatchId())
+                McsroffRuntime.getBackendApi().markWorldLoaded(session, this.activeSession.getMatchId())
+        );
+        this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
+    }
+
+    private void requestReadyLocked() {
+        if (!McsroffRuntime.getAccountManager().hasTrustedSession()) {
+            this.localBackendStatus = "Auth expired";
+            return;
+        }
+        this.localReadyLockedSent = true;
+        this.localWorldStatusCode = maxWorldStatus(this.localWorldStatusCode, "ready");
+        this.localBackendStatus = "Locking pre-race barrier";
+        this.pendingBackendFuture = McsroffRuntime.getAccountManager().executeAuthenticated(session ->
+                McsroffRuntime.getBackendApi().markReadyLocked(session, this.activeSession.getMatchId())
         );
         this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
     }
@@ -234,8 +261,8 @@ public final class PreRaceController {
             this.localBackendStatus = "Backend sync retrying";
             this.nextPollAtMillis = System.currentTimeMillis() + POLL_INTERVAL_MILLIS;
             this.nextHeartbeatAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
-            if (this.localReadySent) {
-                this.localReadySent = false;
+            if (this.localReadyLockedSent) {
+                this.localReadyLockedSent = false;
             }
         } finally {
             this.pendingBackendFuture = null;
@@ -258,8 +285,8 @@ public final class PreRaceController {
         if ("aborted".equalsIgnoreCase(snapshot.getState())) {
             this.aborted = true;
             this.countdownTargetMillis = -1L;
-            this.localReadySent = false;
-            this.opponentWorldStatus = "Disconnected";
+            this.localReadyLockedSent = false;
+            this.opponentWorldStatusCode = "disconnected";
             this.abortReason = humanizeAbortReason(snapshot.getAbortReason());
             this.localBackendStatus = this.abortReason;
             this.activeSession.setPhase(MatchPhase.ABORTED);
@@ -285,11 +312,11 @@ public final class PreRaceController {
         }
 
         if (localPlayer != null) {
-            this.localWorldStatus = humanizeWorldStatus(localPlayer.getWorldStatus());
-            this.localBackendStatus = this.localWorldStatus;
+            this.localWorldStatusCode = maxWorldStatus(this.localWorldStatusCode, localPlayer.getWorldStatus());
+            this.localBackendStatus = humanizeLocalWorldStatus(this.localWorldStatusCode);
         }
         if (opponentPlayer != null) {
-            this.opponentWorldStatus = humanizeWorldStatus(opponentPlayer.getWorldStatus());
+            this.opponentWorldStatusCode = maxWorldStatus(this.opponentWorldStatusCode, opponentPlayer.getWorldStatus());
         }
 
         if (snapshot.getCountdownTargetEpochMillis() > 0L) {
@@ -303,12 +330,13 @@ public final class PreRaceController {
         this.nextHeartbeatAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
-    private boolean shouldSendReady() {
-        return this.localWorldGenerated
-                && !this.localReadySent
-                && worldStage(this.localWorldStatus) >= 2
-                && worldStage(this.opponentWorldStatus) >= 2
+    private boolean shouldSendReadyLocked(Minecraft minecraft) {
+        return this.localWorldLoaded
+                && !this.localReadyLockedSent
+                && worldStage(this.localWorldStatusCode) >= worldStage("generated")
+                && worldStage(this.opponentWorldStatusCode) >= worldStage("generated")
                 && this.countdownTargetMillis <= 0L
+                && minecraft.screen instanceof WorldPreparationScreen
                 && this.pendingBackendFuture == null;
     }
 
@@ -330,11 +358,12 @@ public final class PreRaceController {
         this.nextPollAtMillis = -1L;
         this.nextHeartbeatAtMillis = -1L;
         this.countdownTargetMillis = -1L;
-        this.localWorldGenerated = false;
-        this.localReadySent = false;
-        this.localWorldStatus = "Generating world";
-        this.opponentWorldStatus = "Waiting";
-        this.localBackendStatus = "Waiting for backend sync";
+        this.worldLoadRequested = false;
+        this.localWorldLoaded = false;
+        this.localReadyLockedSent = false;
+        this.localWorldStatusCode = "queued";
+        this.opponentWorldStatusCode = "queued";
+        this.localBackendStatus = "Waiting for world launch";
         this.abortReason = "";
         this.aborted = false;
     }
@@ -343,16 +372,46 @@ public final class PreRaceController {
         if (status == null) {
             return 0;
         }
-        if ("Ready".equals(status)) {
+        if ("ready".equalsIgnoreCase(status) || "Ready".equals(status)) {
             return 3;
         }
-        if ("Generated".equals(status)) {
+        if ("running".equalsIgnoreCase(status) || "Running".equals(status)) {
+            return 4;
+        }
+        if ("finished".equalsIgnoreCase(status) || "Finished".equals(status)) {
+            return 5;
+        }
+        if ("disconnected".equalsIgnoreCase(status) || "Disconnected".equals(status)) {
+            return 6;
+        }
+        if ("generated".equalsIgnoreCase(status) || "Generated".equals(status)) {
             return 2;
         }
-        if ("Generating world".equals(status)) {
+        if ("generating".equalsIgnoreCase(status) || "Generating world".equals(status)) {
             return 1;
         }
         return 0;
+    }
+
+    private static String maxWorldStatus(String left, String right) {
+        return worldStage(right) >= worldStage(left) ? safeStatus(right) : safeStatus(left);
+    }
+
+    private static String safeStatus(String status) {
+        return status == null || status.isEmpty() ? "queued" : status;
+    }
+
+    private static String humanizeLocalWorldStatus(String backendStatus) {
+        if ("generating".equalsIgnoreCase(backendStatus)) {
+            return "Generating local world";
+        }
+        if ("generated".equalsIgnoreCase(backendStatus)) {
+            return "Waiting for opponent world";
+        }
+        if ("ready".equalsIgnoreCase(backendStatus)) {
+            return "World locked and ready";
+        }
+        return humanizeWorldStatus(backendStatus);
     }
 
     private static String humanizeWorldStatus(String backendStatus) {

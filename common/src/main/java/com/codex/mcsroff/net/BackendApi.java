@@ -73,10 +73,28 @@ public final class BackendApi {
         return invokeSnapshotAsync("mark_world_generated", payload, session);
     }
 
+    public CompletableFuture<RemoteMatchSnapshot> beginWorldLoad(final AuthSession session, final String matchId) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("match_id", matchId);
+        return invokeSnapshotAsync("begin_world_load", payload, session);
+    }
+
+    public CompletableFuture<RemoteMatchSnapshot> markWorldLoaded(final AuthSession session, final String matchId) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("match_id", matchId);
+        return invokeSnapshotAsync("mark_world_loaded", payload, session);
+    }
+
     public CompletableFuture<RemoteMatchSnapshot> markReady(final AuthSession session, final String matchId) {
         JsonObject payload = new JsonObject();
         payload.addProperty("match_id", matchId);
         return invokeSnapshotAsync("mark_ready", payload, session);
+    }
+
+    public CompletableFuture<RemoteMatchSnapshot> markReadyLocked(final AuthSession session, final String matchId) {
+        JsonObject payload = new JsonObject();
+        payload.addProperty("match_id", matchId);
+        return invokeSnapshotAsync("mark_ready_locked", payload, session);
     }
 
     public CompletableFuture<RemoteMatchSnapshot> reportActivity(

@@ -46,7 +46,7 @@ async function main() {
 
     const firstMatch = await startRunningMatch(playerOne, playerTwo);
     const afterOneGenerated = firstMatch.afterOneGenerated;
-    assert(afterOneGenerated.match.players.some((player) => player.world_status === 'generated'), 'generated state missing after first world generation');
+    assert(afterOneGenerated.match.players.some((player) => player.world_status === 'generated'), 'loaded state missing after first world load');
     const runningSnapshot = firstMatch.runningSnapshot;
     assert.strictEqual(runningSnapshot.match.state, 'running', 'match never transitioned to running');
 
@@ -70,7 +70,7 @@ async function main() {
     assert.strictEqual(heartbeatSnapshot.match.state, 'running', 'heartbeat should preserve running match state');
 
     const lateGeneratedSnapshot = await matchmaker(playerOne.accessToken, {
-      action: 'mark_world_generated',
+      action: 'mark_world_loaded',
       match_id: firstMatch.matchId
     });
     assert.strictEqual(lateGeneratedSnapshot.match.state, 'running', 'late generated update should not regress a running match');
@@ -237,15 +237,17 @@ async function startRunningMatch(playerOne, playerTwo) {
   const matchedPair = await createMatchedPair(playerOne, playerTwo);
   const joinTwo = matchedPair.matchSnapshot;
 
-  await matchmaker(playerOne.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
+  await matchmaker(playerOne.accessToken, { action: 'begin_world_load', match_id: joinTwo.match.id });
+  await matchmaker(playerTwo.accessToken, { action: 'begin_world_load', match_id: joinTwo.match.id });
+  await matchmaker(playerOne.accessToken, { action: 'mark_world_loaded', match_id: joinTwo.match.id });
   const afterOneGenerated = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
-  await matchmaker(playerTwo.accessToken, { action: 'mark_world_generated', match_id: joinTwo.match.id });
+  await matchmaker(playerTwo.accessToken, { action: 'mark_world_loaded', match_id: joinTwo.match.id });
   const beforeCountdown = await matchmaker(playerTwo.accessToken, { action: 'poll_match', match_id: joinTwo.match.id });
   assert.strictEqual(beforeCountdown.match.state, 'world_generated', 'countdown should not start until both ready');
 
   const readySnapshots = await Promise.all([
-    matchmaker(playerOne.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id }),
-    matchmaker(playerTwo.accessToken, { action: 'mark_ready', match_id: joinTwo.match.id })
+    matchmaker(playerOne.accessToken, { action: 'mark_ready_locked', match_id: joinTwo.match.id }),
+    matchmaker(playerTwo.accessToken, { action: 'mark_ready_locked', match_id: joinTwo.match.id })
   ]);
   const finalSnapshot = readySnapshots.find((snapshot) =>
     snapshot.match && snapshot.match.state === 'countdown' && snapshot.match.countdown_target_epoch_millis > Date.now()

@@ -57,11 +57,20 @@ function createMatchmakingController(options) {
     if (action === 'cancel_queue') {
       return handleCancelQueue(response, user);
     }
+    if (action === 'begin_world_load') {
+      return handleBeginWorldLoad(response, user, body);
+    }
+    if (action === 'mark_world_loaded') {
+      return handleMarkWorldLoaded(response, user, body);
+    }
+    if (action === 'mark_ready_locked') {
+      return handleMarkReadyLocked(response, user, body);
+    }
     if (action === 'mark_world_generated') {
-      return handleMarkWorldGenerated(response, user, body);
+      return handleMarkWorldLoaded(response, user, body);
     }
     if (action === 'mark_ready') {
-      return handleMarkReady(response, user, body);
+      return handleMarkReadyLocked(response, user, body);
     }
     if (action === 'report_activity') {
       return handleReportActivity(response, user, body);
@@ -293,7 +302,44 @@ function createMatchmakingController(options) {
     return sendJson(response, 200, { queue_status: 'cancelled' });
   }
 
-  async function handleMarkWorldGenerated(response, user, body) {
+  async function handleBeginWorldLoad(response, user, body) {
+    let match = await requireOwnedMatch(user.id, body.match_id);
+    if (!match) {
+      return sendJson(response, 404, { error: 'Match not found' });
+    }
+    const player = findMatchPlayer(match, user.id);
+    if (!player) {
+      return sendJson(response, 404, { error: 'Player not found in match' });
+    }
+    if (isTerminalMatchState(match.state) || isStartedMatchState(match.state)) {
+      return sendSnapshot(response, match);
+    }
+    if (worldStatusRank(player.worldStatus) >= worldStatusRank('generating')) {
+      return sendSnapshot(response, match);
+    }
+
+    const now = Date.now();
+    match = await updatePlayerState(match.id, user.id, {
+      connected: true,
+      lastSeenAt: now,
+      worldStatus: 'generating',
+      updatedAt: now
+    });
+    match = await persistMatchState(match);
+    await repositories.auditLogs.insert(createAuditLogEntry(
+      user.id,
+      'match',
+      'begin_world_load',
+      'match',
+      match.id,
+      match.id,
+      {},
+      now
+    ));
+    return sendSnapshot(response, match);
+  }
+
+  async function handleMarkWorldLoaded(response, user, body) {
     let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
@@ -320,7 +366,7 @@ function createMatchmakingController(options) {
     await repositories.auditLogs.insert(createAuditLogEntry(
       user.id,
       'match',
-      'mark_world_generated',
+      'mark_world_loaded',
       'match',
       match.id,
       match.id,
@@ -330,7 +376,7 @@ function createMatchmakingController(options) {
     return sendSnapshot(response, match);
   }
 
-  async function handleMarkReady(response, user, body) {
+  async function handleMarkReadyLocked(response, user, body) {
     let match = await requireOwnedMatch(user.id, body.match_id);
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
@@ -358,7 +404,7 @@ function createMatchmakingController(options) {
     await repositories.auditLogs.insert(createAuditLogEntry(
       user.id,
       'match',
-      'mark_ready',
+      'mark_ready_locked',
       'match',
       match.id,
       match.id,

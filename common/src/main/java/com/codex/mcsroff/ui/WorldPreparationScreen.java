@@ -89,7 +89,7 @@ public final class WorldPreparationScreen extends Screen {
                 this.font,
                 new TextComponent(aborted
                         ? fit(McsroffRuntime.getPreRaceController().getAbortReason(), panelWidth - 50)
-                        : "Both runners stay locked until both worlds are ready."),
+                        : "Countdown starts only after both worlds load and lock."),
                 this.width / 2,
                 panelY + 144,
                 aborted ? 0xFFE38C8C : 10526880

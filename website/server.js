@@ -19,6 +19,7 @@ const {
   POLL_INTERVAL_SECONDS,
   MATCH_PLAYER_STALE_MILLIS,
   MATCH_PRESTART_STALE_MILLIS,
+  MATCH_WORLD_LOADING_STALE_MILLIS,
   MATCH_RUNNING_STALE_MILLIS,
   AUTH_RATE_LIMIT_WINDOW_MS,
   AUTH_RATE_LIMIT_MAX,
@@ -100,6 +101,7 @@ const matchService = createMatchService({
   calculateHeadToHeadRatings,
   matchPlayerStaleMillis: MATCH_PLAYER_STALE_MILLIS,
   matchPrestartStaleMillis: MATCH_PRESTART_STALE_MILLIS,
+  matchWorldLoadingStaleMillis: MATCH_WORLD_LOADING_STALE_MILLIS,
   matchRunningStaleMillis: MATCH_RUNNING_STALE_MILLIS
 });
 const {

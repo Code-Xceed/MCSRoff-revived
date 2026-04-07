@@ -12,6 +12,7 @@ function createMatchService(options) {
     calculateHeadToHeadRatings,
     matchPlayerStaleMillis,
     matchPrestartStaleMillis,
+    matchWorldLoadingStaleMillis,
     matchRunningStaleMillis
   } = options;
 
@@ -144,7 +145,7 @@ function createMatchService(options) {
       match.state = 'world_generated';
       return;
     }
-    if (anyPlayerAtLeast(match, 'generated')) {
+    if (anyPlayerAtLeast(match, 'generating')) {
       match.state = 'world_generating';
       return;
     }
@@ -357,13 +358,25 @@ function createMatchService(options) {
       return null;
     }
 
-    const staleMillis = match.state === 'running' ? matchRunningStaleMillis : matchPrestartStaleMillis;
-    const stalePlayer = match.players.find((player) => !player.lastSeenAt || (now - player.lastSeenAt) > staleMillis);
+    const stalePlayer = match.players.find((player) => {
+      const staleMillis = presenceTimeoutForPlayer(match, player);
+      return !player.lastSeenAt || (now - player.lastSeenAt) > staleMillis;
+    });
     if (!stalePlayer) {
       return null;
     }
 
     return stalePlayer;
+  }
+
+  function presenceTimeoutForPlayer(match, player) {
+    if (match.state === 'running') {
+      return matchRunningStaleMillis;
+    }
+    if (player && player.worldStatus === 'generating') {
+      return matchWorldLoadingStaleMillis;
+    }
+    return matchPrestartStaleMillis;
   }
 
   function markMatchAborted(match, reason, actorUserId) {
