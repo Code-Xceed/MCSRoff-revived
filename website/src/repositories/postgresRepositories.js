@@ -716,6 +716,12 @@ function createPostgresRepositories() {
   const queueEntries = {
     getAll: async () => (await request('GET', 'queue_entries', { params: { select: '*' } })).map(mapQueueEntryFromRow),
     saveAll: async () => { throw new Error('saveAll is not supported for postgres queueEntries repository.'); },
+    findByPlayerId: async (playerId) => {
+      const rows = await request('GET', 'queue_entries', {
+        params: { select: '*', player_id: `eq.${playerId}` }
+      });
+      return mapQueueEntryFromRow(rows[0]);
+    },
     findSearchingByPlayerId: async (playerId) => {
       const rows = await request('GET', 'queue_entries', {
         params: { select: '*', player_id: `eq.${playerId}`, status: 'eq.searching' }
@@ -743,6 +749,27 @@ function createPostgresRepositories() {
           updated_at: toIsoFromMillis(entry.updatedAt),
           expires_at: toIsoFromMillis(entry.expiresAt)
         }
+      });
+      return mapQueueEntryFromRow(rows[0]);
+    },
+    touch: async (playerId, fields) => {
+      const body = {};
+      if (fields.username !== undefined) body.username = fields.username;
+      if (fields.displayName !== undefined) body.display_name = fields.displayName;
+      if (fields.elo !== undefined) body.elo = fields.elo;
+      if (fields.rankTier !== undefined) body.rank_tier = fields.rankTier;
+      if (fields.seedMode !== undefined) body.seed_mode = fields.seedMode;
+      if (fields.seedTypeLabel !== undefined) body.seed_type_label = fields.seedTypeLabel;
+      if (fields.filterIds !== undefined) body.filter_ids = fields.filterIds || [];
+      if (fields.status !== undefined) body.status = fields.status;
+      if (fields.claimedMatchId !== undefined) body.claimed_match_id = fields.claimedMatchId || null;
+      if (fields.lastSeenAt !== undefined) body.last_seen_at = toIsoFromMillis(fields.lastSeenAt);
+      if (fields.updatedAt !== undefined) body.updated_at = toIsoFromMillis(fields.updatedAt);
+      if (fields.expiresAt !== undefined) body.expires_at = toIsoFromMillis(fields.expiresAt);
+      const rows = await request('PATCH', 'queue_entries', {
+        headers: { Prefer: 'return=representation' },
+        params: { player_id: `eq.${playerId}` },
+        body
       });
       return mapQueueEntryFromRow(rows[0]);
     },

@@ -205,12 +205,23 @@ function createJsonRepositories(store) {
   const queueEntries = {
     getAll: () => store.loadTable('queueEntries'),
     saveAll: (rows) => store.saveTable('queueEntries', rows),
+    findByPlayerId: (playerId) => store.loadTable('queueEntries').find((entry) => entry.playerId === playerId) || null,
     findSearchingByPlayerId: (playerId) => store.loadTable('queueEntries').find((entry) => entry.playerId === playerId && entry.status === 'searching') || null,
     upsertSearching: (entry) => {
       const rows = store.loadTable('queueEntries').filter((item) => item.playerId !== entry.playerId);
       rows.push(entry);
       store.saveTable('queueEntries', rows);
       return entry;
+    },
+    touch: (playerId, fields) => {
+      const rows = store.loadTable('queueEntries');
+      const index = rows.findIndex((entry) => entry.playerId === playerId);
+      if (index < 0) {
+        return null;
+      }
+      rows[index] = Object.assign({}, rows[index], fields || {});
+      store.saveTable('queueEntries', rows);
+      return rows[index];
     },
     claimCompatibleOpponent: (requestedEntry, claimMatchId, now, staleMillis) => {
       const rows = store.loadTable('queueEntries');

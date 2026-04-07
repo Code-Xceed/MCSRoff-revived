@@ -204,6 +204,15 @@ async function startRunningMatch(playerOne, playerTwo) {
   });
   assert.strictEqual(joinOne.queue_status, 'searching', 'first player should still be searching');
 
+  const joinOneRepeat = await matchmaker(playerOne.accessToken, {
+    action: 'join_queue',
+    seed_mode: 'MATCH',
+    seed_type_label: 'ZSG Mapless',
+    filter_ids: ['zsg']
+  });
+  assert.strictEqual(joinOneRepeat.queue_status, 'searching', 'repeated queue join should remain searching before an opponent is found');
+  assert(!joinOneRepeat.match, 'repeated queue join should not synthesize a match before an opponent is found');
+
   const joinTwo = await matchmaker(playerTwo.accessToken, {
     action: 'join_queue',
     seed_mode: 'MATCH',

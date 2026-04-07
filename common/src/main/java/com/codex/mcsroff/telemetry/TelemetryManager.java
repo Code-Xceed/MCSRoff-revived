@@ -26,6 +26,7 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 public final class TelemetryManager {
     private static final long HEARTBEAT_INTERVAL_MILLIS = 4000L;
     private static final long REALTIME_FRESHNESS_MILLIS = 3500L;
+    private static final long LOCAL_STATE_FORFEIT_GRACE_MILLIS = 5000L;
     private final Queue<LocalAdvancementUpdate> pendingAdvancements = new ConcurrentLinkedQueue<LocalAdvancementUpdate>();
 
     private CompletableFuture<RemoteMatchSnapshot> pendingSnapshotFuture;
@@ -39,6 +40,7 @@ public final class TelemetryManager {
     private boolean finishSubmissionInFlight;
     private boolean forfeitSubmissionInFlight;
     private boolean forfeitRequested;
+    private long missingLocalStateSinceMillis = -1L;
 
     public void onClientTick(Minecraft minecraft) {
         MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
@@ -50,9 +52,16 @@ public final class TelemetryManager {
             return;
         }
         if (minecraft.player == null || minecraft.level == null) {
-            requestForfeit(session);
+            long now = System.currentTimeMillis();
+            if (this.missingLocalStateSinceMillis < 0L) {
+                this.missingLocalStateSinceMillis = now;
+            }
+            if (now - this.missingLocalStateSinceMillis >= LOCAL_STATE_FORFEIT_GRACE_MILLIS) {
+                requestForfeit(session);
+            }
             return;
         }
+        this.missingLocalStateSinceMillis = -1L;
 
         McsroffRuntime.getMatchRealtimeClient().ensureStreaming(session.getMatchId());
         consumeRealtimeSnapshot(minecraft, session);
@@ -285,6 +294,7 @@ public final class TelemetryManager {
         this.finishSubmissionInFlight = false;
         this.forfeitSubmissionInFlight = false;
         this.forfeitRequested = false;
+        this.missingLocalStateSinceMillis = -1L;
         this.pendingAdvancements.clear();
     }
 

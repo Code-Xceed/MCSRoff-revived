@@ -114,6 +114,7 @@ function createMatchmakingController(options) {
   }
 
   async function handleJoinQueue(response, user, body) {
+    const now = Date.now();
     const activeMatch = await findActiveMatchForUser(user.id);
     if (activeMatch) {
       touchMatchPlayer(activeMatch, user.id);
@@ -127,10 +128,40 @@ function createMatchmakingController(options) {
       return sendJson(response, 400, { error: 'At least one filter id is required' });
     }
 
-    const existingQueueEntry = await repositories.queueEntries.findSearchingByPlayerId(user.id);
-    const now = Date.now();
+    const existingQueueEntry = typeof repositories.queueEntries.findByPlayerId === 'function'
+      ? await repositories.queueEntries.findByPlayerId(user.id)
+      : await repositories.queueEntries.findSearchingByPlayerId(user.id);
+
+    if (existingQueueEntry && existingQueueEntry.status === 'matched') {
+      const claimedMatchId = existingQueueEntry.claimedMatchId || '';
+      if (claimedMatchId) {
+        const claimedMatch = await findMatchById(claimedMatchId);
+        if (claimedMatch && findMatchPlayer(claimedMatch, user.id)) {
+          touchMatchPlayer(claimedMatch, user.id);
+          const refreshedClaimedMatch = await persistMatchState(claimedMatch);
+          return sendSnapshot(response, refreshedClaimedMatch);
+        }
+      }
+
+      if (typeof repositories.queueEntries.touch === 'function') {
+        await repositories.queueEntries.touch(user.id, {
+          username: user.username,
+          displayName: user.displayName,
+          elo: user.elo,
+          rankTier: user.rankTier,
+          seedMode,
+          seedTypeLabel: sanitizeDisplayText(body.seed_type_label, 48) || existingQueueEntry.seedTypeLabel || 'Random FSG Race Pool',
+          filterIds: filterIds.length > 0 ? filterIds : (existingQueueEntry.filterIds || []),
+          lastSeenAt: now,
+          updatedAt: now,
+          expiresAt: now + (2 * 60 * 1000)
+        });
+      }
+      return sendJson(response, 200, { queue_status: 'searching' });
+    }
+
     const ownQueueEntry = {
-      id: existingQueueEntry ? existingQueueEntry.id : crypto.randomUUID(),
+      id: existingQueueEntry && existingQueueEntry.status === 'searching' ? existingQueueEntry.id : crypto.randomUUID(),
       playerId: user.id,
       username: user.username,
       displayName: user.displayName,
@@ -141,7 +172,7 @@ function createMatchmakingController(options) {
       filterIds,
       status: 'searching',
       claimedMatchId: '',
-      createdAt: existingQueueEntry ? existingQueueEntry.createdAt : now,
+      createdAt: existingQueueEntry && existingQueueEntry.status === 'searching' ? existingQueueEntry.createdAt : now,
       updatedAt: now,
       lastSeenAt: now,
       expiresAt: now + (2 * 60 * 1000)

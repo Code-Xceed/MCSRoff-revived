@@ -233,6 +233,11 @@ function createMatchService(options) {
     await repositories.queueEntries.pruneSearchingExpiredOrStale(now, matchPlayerStaleMillis);
 
     const matches = await repositories.matches.getAll();
+    const activeMatchIds = new Set(
+      matches
+        .filter((match) => isMatchActiveState(match.state))
+        .map((match) => match.id)
+    );
     for (const match of matches) {
       const resolution = await resolvePresenceTimeout(match, now);
       if (resolution === 'finished') {
@@ -248,6 +253,24 @@ function createMatchService(options) {
       if (changed) {
         await repositories.matches.update(match);
       }
+    }
+
+    const queueEntries = await repositories.queueEntries.getAll();
+    const staleClaimedPlayerIds = queueEntries
+      .filter((entry) => {
+        if (entry.status !== 'matched') {
+          return false;
+        }
+        const hasActiveClaimedMatch = !!entry.claimedMatchId && activeMatchIds.has(entry.claimedMatchId);
+        if (hasActiveClaimedMatch) {
+          return false;
+        }
+        const freshnessAnchor = Math.max(Number(entry.updatedAt || 0), Number(entry.lastSeenAt || 0), Number(entry.createdAt || 0));
+        return freshnessAnchor <= 0 || (now - freshnessAnchor) > matchPlayerStaleMillis;
+      })
+      .map((entry) => entry.playerId);
+    if (staleClaimedPlayerIds.length > 0) {
+      await repositories.queueEntries.removeByPlayerIds(staleClaimedPlayerIds);
     }
   }
 
