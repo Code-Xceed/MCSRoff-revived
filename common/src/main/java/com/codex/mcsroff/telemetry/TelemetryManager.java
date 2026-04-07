@@ -11,13 +11,20 @@ import com.codex.mcsroff.net.RemoteMatchSnapshot;
 import com.mojang.blaze3d.vertex.PoseStack;
 import net.minecraft.ChatFormatting;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.server.IntegratedServer;
 import net.minecraft.client.gui.Font;
 import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.network.chat.TextComponent;
 import net.minecraft.network.chat.TranslatableComponent;
 import net.minecraft.resources.ResourceKey;
+import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.GameType;
+import net.minecraft.world.level.LevelSettings;
+import net.minecraft.world.level.storage.PrimaryLevelData;
+import net.minecraft.world.level.storage.WorldData;
 
+import java.lang.reflect.Field;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Queue;
@@ -42,6 +49,7 @@ public final class TelemetryManager {
     private boolean forfeitSubmissionInFlight;
     private boolean forfeitRequested;
     private long missingLocalStateSinceMillis = -1L;
+    private String lastResolvedMatchId = "";
 
     public void onClientTick(Minecraft minecraft) {
         MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
@@ -105,7 +113,27 @@ public final class TelemetryManager {
         if (advancementId == null || advancementId.isEmpty() || title == null || title.isEmpty()) {
             return;
         }
+        if ("minecraft:end/kill_dragon".equals(advancementId)) {
+            McsroffRuntime.getMatchManager().updateDragonKillConfirmed(true);
+        }
         this.pendingAdvancements.add(new LocalAdvancementUpdate(advancementId, normalizeAdvancementFrame(frameType), title));
+    }
+
+    public boolean shouldSuppressWinGamePacket() {
+        MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
+        if (session == null) {
+            return false;
+        }
+        MatchPhase phase = session.getPhase();
+        return phase == MatchPhase.RUNNING || phase == MatchPhase.FINISHED;
+    }
+
+    public void reportLocalPortalFinish() {
+        MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
+        if (session == null || session.getPhase() != MatchPhase.RUNNING || !session.isDragonKillConfirmed()) {
+            return;
+        }
+        submitFinish(session);
     }
 
     private void flushLocalSignals(Minecraft minecraft, MatchSession session) {
@@ -130,11 +158,10 @@ public final class TelemetryManager {
 
         LocalAdvancementUpdate update = this.pendingAdvancements.poll();
         if (update != null) {
-            if ("minecraft:end/kill_dragon".equals(update.getAdvancementId())) {
-                reportFinish(session);
-                return;
-            }
             String statusText = mapStatusFromAdvancement(update.getAdvancementId());
+            if ("minecraft:end/kill_dragon".equals(update.getAdvancementId())) {
+                session.setDragonKillConfirmed(true);
+            }
             reportActivity(session, "advancement:" + update.getFrameType(), update.getAdvancementId(), statusText, update.getTitle(), update.getAdvancementId());
         }
     }
@@ -179,7 +206,7 @@ public final class TelemetryManager {
         this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
-    private void reportFinish(MatchSession session) {
+    private void submitFinish(MatchSession session) {
         if (session == null || session.isFinishReported() || !McsroffRuntime.getAccountManager().hasTrustedSession()) {
             return;
         }
@@ -191,7 +218,17 @@ public final class TelemetryManager {
         McsroffRuntime.getMatchManager().updateFinishReported(true);
         this.finishSubmissionInFlight = true;
         this.pendingSnapshotFuture = McsroffRuntime.getAccountManager().executeAuthenticated(authSession ->
-                McsroffRuntime.getBackendApi().reportFinish(authSession, session.getMatchId(), finishTimeMs)
+                McsroffRuntime.getBackendApi().reportActivity(
+                        authSession,
+                        session.getMatchId(),
+                        "advancement:goal",
+                        "minecraft:end/kill_dragon",
+                        "Dragon Down",
+                        "Free the End",
+                        "minecraft:end/kill_dragon"
+                ).thenCompose(snapshot ->
+                        McsroffRuntime.getBackendApi().reportFinish(authSession, session.getMatchId(), finishTimeMs)
+                )
         );
         this.nextPollAtMillis = now + HEARTBEAT_INTERVAL_MILLIS;
     }
@@ -247,6 +284,8 @@ public final class TelemetryManager {
         }
 
         if ("finished".equalsIgnoreCase(snapshot.getState())) {
+            showWinnerResult(minecraft, snapshot);
+            applyPostMatchState(minecraft);
             McsroffRuntime.getMatchManager().updateCurrentPhase(MatchPhase.FINISHED);
             McsroffRuntime.getMatchRealtimeClient().stop();
         } else if ("aborted".equalsIgnoreCase(snapshot.getState())) {
@@ -302,6 +341,7 @@ public final class TelemetryManager {
         this.forfeitSubmissionInFlight = false;
         this.forfeitRequested = false;
         this.missingLocalStateSinceMillis = -1L;
+        this.lastResolvedMatchId = "";
         this.pendingAdvancements.clear();
     }
 
@@ -347,9 +387,108 @@ public final class TelemetryManager {
             return "Finding Stronghold";
         }
         if ("minecraft:end/kill_dragon".equals(advancementId)) {
-            return "Completed";
+            return "Dragon Down";
         }
         return "";
+    }
+
+    private void showWinnerResult(Minecraft minecraft, RemoteMatchSnapshot snapshot) {
+        if (minecraft == null || minecraft.gui == null || snapshot == null || snapshot.getMatchId() == null || snapshot.getMatchId().isEmpty()) {
+            return;
+        }
+        if (snapshot.getMatchId().equals(this.lastResolvedMatchId)) {
+            return;
+        }
+
+        RemoteMatchPlayer winner = null;
+        if (snapshot.getWinnerPlayerId() != null && !snapshot.getWinnerPlayerId().isEmpty()) {
+            for (RemoteMatchPlayer player : snapshot.getPlayers()) {
+                if (snapshot.getWinnerPlayerId().equals(player.getPlayerId())) {
+                    winner = player;
+                    break;
+                }
+            }
+        }
+        if (winner == null) {
+            for (RemoteMatchPlayer player : snapshot.getPlayers()) {
+                if ("win".equalsIgnoreCase(player.getResult())) {
+                    winner = player;
+                    break;
+                }
+            }
+        }
+        if (winner == null) {
+            return;
+        }
+
+        String title = winner.getDisplayName() + " wins";
+        String subtitle = winner.getFinishTimeMs() > 0L
+                ? "Winner Time " + formatRaceTime(winner.getFinishTimeMs())
+                : "Match complete";
+        minecraft.gui.setTitles(new TextComponent(title), new TextComponent(subtitle), 0, 80, 20);
+        this.lastResolvedMatchId = snapshot.getMatchId();
+    }
+
+    private void applyPostMatchState(Minecraft minecraft) {
+        if (minecraft == null) {
+            return;
+        }
+        IntegratedServer server = minecraft.getSingleplayerServer();
+        if (server == null || minecraft.player == null) {
+            return;
+        }
+        server.execute(() -> {
+            ServerPlayer serverPlayer = server.getPlayerList().getPlayer(minecraft.player.getUUID());
+            if (serverPlayer != null) {
+                serverPlayer.setGameMode(GameType.SPECTATOR);
+            }
+            enableLocalCommands(server);
+        });
+    }
+
+    private void enableLocalCommands(IntegratedServer server) {
+        if (server == null) {
+            return;
+        }
+        try {
+            WorldData worldData = server.getWorldData();
+            if (!(worldData instanceof PrimaryLevelData)) {
+                return;
+            }
+            PrimaryLevelData primaryLevelData = (PrimaryLevelData) worldData;
+            if (primaryLevelData.getAllowCommands()) {
+                return;
+            }
+
+            LevelSettings current = primaryLevelData.getLevelSettings();
+            LevelSettings updated = new LevelSettings(
+                    current.levelName(),
+                    current.gameType(),
+                    current.hardcore(),
+                    current.difficulty(),
+                    true,
+                    current.gameRules(),
+                    current.getDataPackConfig()
+            );
+            Field settingsField = PrimaryLevelData.class.getDeclaredField("settings");
+            settingsField.setAccessible(true);
+            settingsField.set(primaryLevelData, updated);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String formatRaceTime(long totalMillis) {
+        long millis = Math.max(0L, totalMillis);
+        long hours = millis / 3600000L;
+        millis %= 3600000L;
+        long minutes = millis / 60000L;
+        millis %= 60000L;
+        long seconds = millis / 1000L;
+        long remainingMillis = millis % 1000L;
+        if (hours > 0L) {
+            return String.format("%d:%02d:%02d.%03d", hours, minutes, seconds, remainingMillis);
+        }
+        return String.format("%02d:%02d.%03d", minutes, seconds, remainingMillis);
     }
 
     private static boolean isAdvancementEvent(RemoteMatchEvent event) {

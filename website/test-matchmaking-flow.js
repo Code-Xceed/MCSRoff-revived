@@ -76,17 +76,37 @@ async function main() {
     assert.strictEqual(lateGeneratedSnapshot.match.state, 'running', 'late generated update should not regress a running match');
     assert(lateGeneratedSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.world_status === 'running'), 'late generated update should not downgrade local running status');
 
+    const prematureFinish = await postJson('/matchmaker', {
+      action: 'report_finish',
+      match_id: firstMatch.matchId,
+      finish_time_ms: 1234567
+    }, {
+      Authorization: `Bearer ${playerOne.accessToken}`
+    });
+    assert.strictEqual(prematureFinish.statusCode, 409, 'finish should require dragon confirmation');
+
     const finishSnapshot = await matchmaker(playerOne.accessToken, {
+      action: 'report_activity',
+      match_id: firstMatch.matchId,
+      type: 'advancement:goal',
+      activity_key: 'minecraft:end/kill_dragon',
+      status_text: 'Dragon Down',
+      chat_message: 'Free the End',
+      advancement_id: 'minecraft:end/kill_dragon'
+    });
+    assert(finishSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.activity_status === 'Dragon Down'), 'dragon confirmation status missing');
+
+    const finishResolvedSnapshot = await matchmaker(playerOne.accessToken, {
       action: 'report_finish',
       match_id: firstMatch.matchId,
       finish_time_ms: 1234567
     });
-    assert.strictEqual(finishSnapshot.match.state, 'finished', 'finish did not finalize the match');
-    assert.strictEqual(finishSnapshot.match.winner_player_id, playerOne.userId, 'winner player id mismatch after finish');
-    assert(finishSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.result === 'win'), 'winner result missing');
-    assert(finishSnapshot.match.players.some((player) => player.player_id === playerTwo.userId && player.result === 'loss'), 'loser result missing');
+    assert.strictEqual(finishResolvedSnapshot.match.state, 'finished', 'finish did not finalize the match');
+    assert.strictEqual(finishResolvedSnapshot.match.winner_player_id, playerOne.userId, 'winner player id mismatch after finish');
+    assert(finishResolvedSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.result === 'win'), 'winner result missing');
+    assert(finishResolvedSnapshot.match.players.some((player) => player.player_id === playerTwo.userId && player.result === 'loss'), 'loser result missing');
 
-    const finishedEventCount = finishSnapshot.match.events.length;
+    const finishedEventCount = finishResolvedSnapshot.match.events.length;
     const lateActivitySnapshot = await matchmaker(playerTwo.accessToken, {
       action: 'report_activity',
       match_id: firstMatch.matchId,
@@ -123,9 +143,9 @@ async function main() {
     if (storageBackend === 'json') {
       const ratingHistory = readJsonTable('rating_history.json');
       const auditLogs = readJsonTable('audit_logs.json');
-      assert(ratingHistory.filter((entry) => entry.matchId === finishSnapshot.match.id).length >= 2, 'rating history entries missing for finished match');
-      assert(auditLogs.some((entry) => entry.matchId === finishSnapshot.match.id && entry.action === 'report_finish'), 'finish audit log missing for finished match');
-      assert(auditLogs.some((entry) => entry.category === 'matchmaking' && entry.action === 'join_queue_matched' && entry.matchId === finishSnapshot.match.id), 'matchmade audit log missing');
+      assert(ratingHistory.filter((entry) => entry.matchId === finishResolvedSnapshot.match.id).length >= 2, 'rating history entries missing for finished match');
+      assert(auditLogs.some((entry) => entry.matchId === finishResolvedSnapshot.match.id && entry.action === 'report_finish'), 'finish audit log missing for finished match');
+      assert(auditLogs.some((entry) => entry.category === 'matchmaking' && entry.action === 'join_queue_matched' && entry.matchId === finishResolvedSnapshot.match.id), 'matchmade audit log missing');
       assert(auditLogs.some((entry) => entry.matchId === forfeitSnapshot.match.id && entry.action === 'forfeit_match'), 'forfeit audit log missing');
     }
 
@@ -147,8 +167,8 @@ async function main() {
     assert.strictEqual(cancelledView.match.abort_reason, 'player_cancelled', 'opponent should see player_cancelled abort reason');
 
     console.log('Matchmaking flow passed.');
-    console.log(`Match ID: ${finishSnapshot.match.id}`);
-    console.log(`Seed: ${finishSnapshot.match.seed}`);
+    console.log(`Match ID: ${finishResolvedSnapshot.match.id}`);
+    console.log(`Seed: ${finishResolvedSnapshot.match.seed}`);
     console.log(`Winner Elo: ${winnerProfile.elo}`);
     console.log(`Loser Elo: ${loserProfile.elo}`);
   } finally {

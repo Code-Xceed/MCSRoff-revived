@@ -424,6 +424,17 @@ function createMatchService(options) {
     return Math.min(Math.floor(parsed), 24 * 60 * 60 * 1000);
   }
 
+  function hasVerifiedDragonKill(match, userId) {
+    if (!match || !Array.isArray(match.events) || !userId) {
+      return false;
+    }
+    return match.events.some((event) =>
+      event
+      && event.playerId === userId
+      && String(event.advancementId || '') === 'minecraft:end/kill_dragon'
+    );
+  }
+
   function pickWinningPlayer(players) {
     if (!Array.isArray(players)) {
       return null;
@@ -503,6 +514,9 @@ function createMatchService(options) {
     const player = findMatchPlayer(match, userId);
     if (!player) {
       return { ok: false, code: 'player_not_found' };
+    }
+    if (!hasVerifiedDragonKill(match, userId)) {
+      return { ok: false, code: 'dragon_not_confirmed' };
     }
     if (player.worldStatus === 'finished') {
       return { ok: true, match };

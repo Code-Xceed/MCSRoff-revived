@@ -444,24 +444,33 @@ function createMatchmakingController(options) {
     }
 
     if (activityKey || chatMessage) {
+      const duplicateRecentEvent = Array.isArray(match.events) && match.events.some((event) =>
+        event
+        && event.playerId === user.id
+        && event.type === type
+        && event.activityKey === activityKey
+        && (now - Number(event.createdAt || 0)) <= 15000
+      );
       if (!Array.isArray(match.events)) {
         match.events = [];
       }
       if (!match.nextEventSeq) {
         match.nextEventSeq = 1;
       }
-      match.events.push({
-        seq: match.nextEventSeq++,
-        playerId: user.id,
-        type,
-        activityKey,
-        statusText,
-        chatMessage,
-        advancementId,
-        createdAt: now
-      });
-      if (match.events.length > 80) {
-        match.events = match.events.slice(match.events.length - 80);
+      if (!duplicateRecentEvent) {
+        match.events.push({
+          seq: match.nextEventSeq++,
+          playerId: user.id,
+          type,
+          activityKey,
+          statusText,
+          chatMessage,
+          advancementId,
+          createdAt: now
+        });
+        if (match.events.length > 80) {
+          match.events = match.events.slice(match.events.length - 80);
+        }
       }
     }
 
@@ -523,10 +532,13 @@ function createMatchmakingController(options) {
     if (!match) {
       return sendJson(response, 404, { error: 'Match not found' });
     }
+    if (isTerminalMatchState(match.state)) {
+      return sendSnapshot(response, match);
+    }
 
     const outcome = await reportMatchFinish(match, user.id, body.finish_time_ms);
     if (!outcome.ok) {
-      const code = outcome.code === 'match_not_running' ? 409 : 400;
+      const code = outcome.code === 'match_not_running' || outcome.code === 'dragon_not_confirmed' ? 409 : 400;
       return sendJson(response, code, { error: outcome.code });
     }
     return sendSnapshot(response, outcome.match);

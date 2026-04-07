@@ -94,7 +94,7 @@ public final class PreRaceController {
             ensureCountdownScreen(minecraft);
             if (now >= this.countdownTargetMillis) {
                 McsroffRuntime.getMatchManager().updateCurrentPhase(MatchPhase.RUNNING);
-                McsroffRuntime.getMatchManager().recordRunStarted(now);
+                McsroffRuntime.getMatchManager().recordRunStarted(this.countdownTargetMillis > 0L ? this.countdownTargetMillis : now);
                 if (minecraft.screen instanceof PreRaceCountdownScreen) {
                     minecraft.setScreen(null);
                 }

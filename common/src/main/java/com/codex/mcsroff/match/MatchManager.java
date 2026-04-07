@@ -74,4 +74,10 @@ public final class MatchManager {
             this.currentSession.setFinishReported(finishReported);
         }
     }
+
+    public void updateDragonKillConfirmed(boolean dragonKillConfirmed) {
+        if (this.currentSession != null) {
+            this.currentSession.setDragonKillConfirmed(dragonKillConfirmed);
+        }
+    }
 }

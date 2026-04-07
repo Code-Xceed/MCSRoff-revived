@@ -19,6 +19,7 @@ public final class RemoteMatchSnapshot {
     private final String seedTypeLabel;
     private final String fsgFilterId;
     private final String abortReason;
+    private final String winnerPlayerId;
     private final SeedMode seedMode;
     private final long countdownTargetEpochMillis;
     private final List<RemoteMatchPlayer> players;
@@ -33,6 +34,7 @@ public final class RemoteMatchSnapshot {
             String seedTypeLabel,
             String fsgFilterId,
             String abortReason,
+            String winnerPlayerId,
             SeedMode seedMode,
             long countdownTargetEpochMillis,
             List<RemoteMatchPlayer> players,
@@ -46,6 +48,7 @@ public final class RemoteMatchSnapshot {
         this.seedTypeLabel = seedTypeLabel;
         this.fsgFilterId = fsgFilterId;
         this.abortReason = abortReason;
+        this.winnerPlayerId = winnerPlayerId;
         this.seedMode = seedMode == null ? SeedMode.MATCH : seedMode;
         this.countdownTargetEpochMillis = countdownTargetEpochMillis;
         this.players = players == null ? Collections.<RemoteMatchPlayer>emptyList() : Collections.unmodifiableList(new ArrayList<RemoteMatchPlayer>(players));
@@ -82,6 +85,10 @@ public final class RemoteMatchSnapshot {
 
     public String getAbortReason() {
         return this.abortReason;
+    }
+
+    public String getWinnerPlayerId() {
+        return this.winnerPlayerId;
     }
 
     public SeedMode getSeedMode() {
@@ -122,7 +129,9 @@ public final class RemoteMatchSnapshot {
                         getString(player, "slot"),
                         getString(player, "world_status"),
                         getBoolean(player, "connected", true),
-                        getString(player, "activity_status")
+                        getString(player, "activity_status"),
+                        getLong(player, "finish_time_ms", 0L),
+                        getString(player, "result")
                 ));
             }
         }
@@ -156,6 +165,7 @@ public final class RemoteMatchSnapshot {
                 getString(match, "seed_type_label"),
                 getString(match, "fsg_filter_id"),
                 getString(match, "abort_reason"),
+                getString(match, "winner_player_id"),
                 parseSeedMode(getString(match, "seed_mode")),
                 getLong(match, "countdown_target_epoch_millis", 0L),
                 players,

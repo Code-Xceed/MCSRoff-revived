@@ -11,6 +11,7 @@ public final class MatchSession {
     private MatchPhase phase;
     private long runStartedAtMillis;
     private boolean finishReported;
+    private boolean dragonKillConfirmed;
     private String worldId;
 
     public MatchSession(String matchId, String playerRole, SeedAssignment seedAssignment, MatchPhase phase, String seedTypeLabel, MatchOpponent opponent) {
@@ -22,6 +23,7 @@ public final class MatchSession {
         this.opponent = opponent;
         this.runStartedAtMillis = 0L;
         this.finishReported = false;
+        this.dragonKillConfirmed = false;
         this.worldId = "";
     }
 
@@ -71,6 +73,14 @@ public final class MatchSession {
 
     public void setFinishReported(boolean finishReported) {
         this.finishReported = finishReported;
+    }
+
+    public boolean isDragonKillConfirmed() {
+        return this.dragonKillConfirmed;
+    }
+
+    public void setDragonKillConfirmed(boolean dragonKillConfirmed) {
+        this.dragonKillConfirmed = dragonKillConfirmed;
     }
 
     public String getWorldId() {

@@ -4,10 +4,12 @@
   "package": "com.codex.mcsroff.mixin",
   "compatibilityLevel": "JAVA_${java_version}",
   "mixins": [
+    "ClientPacketListenerMixin",
     "GuiMixin",
     "MinecraftMixin",
     "LocalPlayerMixin",
     "PlayerAdvancementsMixin",
+    "ServerPlayerMixin",
     "TitleScreenMixin"
   ]
 }

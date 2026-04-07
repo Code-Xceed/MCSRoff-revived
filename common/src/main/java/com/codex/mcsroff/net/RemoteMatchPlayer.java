@@ -9,8 +9,10 @@ public final class RemoteMatchPlayer {
     private final String worldStatus;
     private final boolean connected;
     private final String activityStatus;
+    private final long finishTimeMs;
+    private final String result;
 
-    public RemoteMatchPlayer(String playerId, String displayName, int elo, String rank, String slot, String worldStatus, boolean connected, String activityStatus) {
+    public RemoteMatchPlayer(String playerId, String displayName, int elo, String rank, String slot, String worldStatus, boolean connected, String activityStatus, long finishTimeMs, String result) {
         this.playerId = playerId;
         this.displayName = displayName;
         this.elo = elo;
@@ -19,6 +21,8 @@ public final class RemoteMatchPlayer {
         this.worldStatus = worldStatus;
         this.connected = connected;
         this.activityStatus = activityStatus;
+        this.finishTimeMs = finishTimeMs;
+        this.result = result;
     }
 
     public String getPlayerId() {
@@ -51,5 +55,13 @@ public final class RemoteMatchPlayer {
 
     public String getActivityStatus() {
         return this.activityStatus;
+    }
+
+    public long getFinishTimeMs() {
+        return this.finishTimeMs;
+    }
+
+    public String getResult() {
+        return this.result;
     }
 }
