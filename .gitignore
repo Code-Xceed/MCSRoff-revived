@@ -53,4 +53,6 @@ run/
 website/data/*.json
 !website/data/.gitkeep
 website/.env
+website/keys/
 website/runtime-export.sql
+website/node_modules/

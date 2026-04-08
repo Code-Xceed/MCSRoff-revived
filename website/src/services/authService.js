@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const { signSessionToken, verifySessionToken } = require('../utils/jwt');
+const sessionCache = require('../cache/sessionCache');
 
 function createAuthService(options) {
   const {
@@ -82,16 +84,44 @@ function createAuthService(options) {
     if (!token) {
       return null;
     }
-    return repositories.modSessions.findActiveByAccessToken(token, Date.now());
+
+    const cached = await sessionCache.getCachedSession(token);
+    if (cached) {
+      return cached;
+    }
+
+    const decoded = verifySessionToken(token);
+    let session = null;
+    if (decoded && decoded.sid) {
+      session = await repositories.modSessions.findById(decoded.sid);
+      if (!session || session.accessToken !== token) {
+        session = null;
+      }
+    } else {
+      session = await repositories.modSessions.findActiveByAccessToken(token, Date.now());
+    }
+
+    if (session) {
+      await sessionCache.setCachedSession(token, session);
+    }
+    return session;
   }
 
   async function issueModSession(userId, scope) {
     const now = Date.now();
+    const sessionId = crypto.randomUUID();
+    const payload = {
+      sub: userId,
+      sid: sessionId,
+      scope: scope
+    };
+
+    const token = signSessionToken(payload, accessTokenTtlSeconds);
     const session = {
-      id: crypto.randomUUID(),
+      id: sessionId,
       userId,
       scope,
-      accessToken: `acc_${crypto.randomBytes(24).toString('hex')}`,
+      accessToken: token,
       refreshToken: `ref_${crypto.randomBytes(32).toString('hex')}`,
       accessExpiresAt: now + (accessTokenTtlSeconds * 1000),
       refreshExpiresAt: now + (refreshTokenTtlSeconds * 1000),

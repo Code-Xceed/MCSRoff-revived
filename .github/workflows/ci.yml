@@ -1,0 +1,80 @@
+name: MCSR Offline CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-mod:
+    name: Build Mod (Java 8)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up JDK 8
+      uses: actions/setup-java@v3
+      with:
+        java-version: '8'
+        distribution: 'temurin'
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+    - name: Build with Gradle
+      run: ./gradlew build -x test
+
+  test-backend:
+    name: Test Backend (Node.js)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: user
+          POSTGRES_PASSWORD: password
+          POSTGRES_DB: mcsroff
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+
+    steps:
+    - uses: actions/checkout@v3
+    - name: Use Node.js 20.x
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+        cache-dependency-path: 'website/package-lock.json'
+    
+    - name: Install Dependencies
+      working-directory: ./website
+      run: npm ci
+
+    - name: Run Database Migrations
+      working-directory: ./website
+      env:
+        DATABASE_URL: postgresql://user:password@localhost:5432/mcsroff
+      run: |
+        psql $DATABASE_URL -f src/db/migrations/001_add_indices.sql
+        # Provide the Supabase SQL context for testing:
+        psql $DATABASE_URL -f ../supabase/schema.sql
+
+    - name: Run Vitest Suite
+      working-directory: ./website
+      env:
+        DATABASE_URL: postgresql://user:password@localhost:5432/mcsroff
+        REDIS_URL: redis://localhost:6379
+        NODE_ENV: test
+      run: npm run test:ci

@@ -9,6 +9,7 @@
     "MinecraftMixin",
     "LocalPlayerMixin",
     "PlayerAdvancementsMixin",
+    "PrimaryLevelDataAccessor",
     "TitleScreenMixin"
   ]
 }

@@ -1,100 +1,165 @@
 'use strict';
 
-const { getPostgresRuntimeConfig, validatePostgresRuntimeConfig } = require('../db/postgresConfig');
+const { query } = require('../db/pool');
 
 function createPostgresRepositories() {
-  const config = getPostgresRuntimeConfig();
-  const errors = validatePostgresRuntimeConfig(config);
-  if (errors.length > 0) {
-    throw new Error(`Postgres backend is not configured. ${errors.join(' ')}`);
-  }
-  if (!config.supabaseUrl || !config.supabaseServiceRoleKey) {
-    throw new Error('The current postgres repository implementation requires SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.');
-  }
-
-  const restBaseUrl = `${config.supabaseUrl.replace(/\/$/, '')}/rest/v1`;
-  const authHeaders = {
-    apikey: config.supabaseServiceRoleKey,
-    Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
-    'Content-Type': 'application/json'
-  };
-  const REQUEST_TIMEOUT_MILLIS = 15000;
-
-  async function fetchWithTimeout(url, options) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MILLIS);
-    try {
-      return await fetch(url, Object.assign({}, options, {
-        signal: controller.signal
-      }));
-    } catch (error) {
-      if (error && error.name === 'AbortError') {
-        throw new Error(`PostgREST request timed out after ${REQUEST_TIMEOUT_MILLIS}ms: ${url}`);
-      }
-      throw error;
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  async function request(method, table, options) {
-    const query = new URLSearchParams();
-    const params = options && options.params ? options.params : {};
-    Object.keys(params).forEach((key) => {
-      if (params[key] != null && params[key] !== '') {
-        query.set(key, String(params[key]));
-      }
-    });
-    const url = `${restBaseUrl}/${table}${query.toString() ? `?${query.toString()}` : ''}`;
-    const headers = Object.assign({}, authHeaders, options && options.headers ? options.headers : {});
-    const response = await fetchWithTimeout(url, {
-      method,
-      headers,
-      body: options && options.body !== undefined ? JSON.stringify(options.body) : undefined
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`PostgREST ${method} ${table} failed with HTTP ${response.status}: ${text}`);
-    }
-    if (!text) {
-      return null;
-    }
-    return JSON.parse(text);
-  }
-
-  async function rpc(functionName, body) {
-    const response = await fetchWithTimeout(`${restBaseUrl}/rpc/${functionName}`, {
-      method: 'POST',
-      headers: authHeaders,
-      body: JSON.stringify(body || {})
-    });
-    const text = await response.text();
-    if (!response.ok) {
-      throw new Error(`PostgREST RPC ${functionName} failed with HTTP ${response.status}: ${text}`);
-    }
-    if (!text) {
-      return null;
-    }
-    return JSON.parse(text);
-  }
-
   function toIsoFromMillis(value) {
-    if (!value) {
-      return null;
-    }
+    if (!value) return null;
     const millis = Number(value);
-    if (!Number.isFinite(millis) || millis <= 0) {
-      return null;
-    }
+    if (!Number.isFinite(millis) || millis <= 0) return null;
     return new Date(millis).toISOString();
   }
 
   function toMillisFromIso(value) {
-    if (!value) {
-      return 0;
-    }
+    if (!value) return 0;
     const millis = Date.parse(value);
     return Number.isFinite(millis) ? millis : 0;
+  }
+
+  async function request(method, table, options = {}) {
+    const params = options.params || {};
+    const body = options.body;
+    let sql = '';
+    const values = [];
+
+    if (method === 'GET') {
+      const select = params.select || '*';
+      sql = `SELECT ${select} FROM ${table}`;
+      const wheres = [];
+      
+      for (const [key, val] of Object.entries(params)) {
+        if (key === 'select' || key === 'order' || key === 'limit') continue;
+        if (key === 'or') {
+          const inner = val.substring(1, val.length - 1);
+          const parts = inner.split(',');
+          const orConds = parts.map(p => {
+             const [col, op, ...rest] = p.split('.');
+             const v = rest.join('.');
+             if (op === 'eq') { values.push(v); return `${col} = $${values.length}`; }
+             return '';
+          });
+          wheres.push(`(${orConds.join(' OR ')})`);
+          continue;
+        }
+        
+        const [op, ...rest] = val.split('.');
+        const v = rest.join('.');
+        if (op === 'eq') { values.push(v); wheres.push(`${key} = $${values.length}`); }
+        else if (op === 'gt') { values.push(v); wheres.push(`${key} > $${values.length}`); }
+        else if (op === 'lt') { values.push(v); wheres.push(`${key} < $${values.length}`); }
+        else if (op === 'in') {
+          const list = v.substring(1, val.length - 1).split(',');
+          const placeholders = list.map(item => {
+            values.push(item);
+            return `$${values.length}`;
+          }).join(',');
+          wheres.push(`${key} IN (${placeholders})`);
+        }
+        else if (op === 'is' && v === 'null') {
+          wheres.push(`${key} IS NULL`);
+        }
+      }
+
+      if (wheres.length > 0) sql += ' WHERE ' + wheres.join(' AND ');
+      if (params.order) {
+        const [col, dir] = params.order.split('.');
+        sql += ` ORDER BY ${col} ${dir.toUpperCase()}`;
+      }
+      if (params.limit) {
+        values.push(parseInt(params.limit));
+        sql += ` LIMIT $${values.length}`;
+      }
+    } else if (method === 'POST') {
+      const isArray = Array.isArray(body);
+      const items = isArray ? body : [body];
+      if (items.length === 0) return [];
+      
+      const keys = Object.keys(items[0]);
+      const columns = keys.join(', ');
+      const rows = [];
+      
+      items.forEach(item => {
+        const row = keys.map(k => {
+          let val = item[k];
+          if (Array.isArray(val) || (val && typeof val === 'object')) { val = JSON.stringify(val); }
+          values.push(val);
+          return `$${values.length}`;
+        });
+        rows.push(`(${row.join(', ')})`);
+      });
+      
+      sql = `INSERT INTO ${table} (${columns}) VALUES ${rows.join(', ')}`;
+      if (params.on_conflict) {
+        sql += ` ON CONFLICT (${params.on_conflict}) DO UPDATE SET `;
+        const updates = keys.filter(k => !params.on_conflict.split(',').includes(k)).map(k => `${k} = EXCLUDED.${k}`);
+        if (updates.length > 0) {
+           sql += updates.join(', ');
+        } else {
+           sql = sql.replace(`ON CONFLICT (${params.on_conflict}) DO UPDATE SET `, `ON CONFLICT (${params.on_conflict}) DO NOTHING`);
+        }
+      }
+      if (options.headers && options.headers.Prefer && options.headers.Prefer.includes('return=representation')) {
+         sql += ' RETURNING *';
+      }
+    } else if (method === 'PATCH') {
+      const keys = Object.keys(body);
+      const sets = keys.map(k => {
+        let val = body[k];
+        if (Array.isArray(val) || (val && typeof val === 'object')) { val = JSON.stringify(val); }
+        values.push(val);
+        return `${k} = $${values.length}`;
+      });
+      sql = `UPDATE ${table} SET ${sets.join(', ')}`;
+      
+      const wheres = [];
+      for (const [key, val] of Object.entries(params)) {
+        if (key === 'on_conflict' || key === 'select' || key === 'order' || key === 'limit') continue;
+        const [op, ...rest] = val.split('.');
+        const v = rest.join('.');
+        if (op === 'eq') { values.push(v); wheres.push(`${key} = $${values.length}`); }
+        else if (op === 'is' && v === 'null') { wheres.push(`${key} IS NULL`); }
+      }
+      if (wheres.length > 0) sql += ' WHERE ' + wheres.join(' AND ');
+      
+      if (options.headers && options.headers.Prefer && options.headers.Prefer.includes('return=representation')) {
+         sql += ' RETURNING *';
+      }
+    } else if (method === 'DELETE') {
+      sql = `DELETE FROM ${table}`;
+      const wheres = [];
+      for (const [key, val] of Object.entries(params)) {
+        const [op, ...rest] = val.split('.');
+        const v = rest.join('.');
+        if (op === 'eq') { values.push(v); wheres.push(`${key} = $${values.length}`); }
+        if (op === 'lt') { values.push(v); wheres.push(`${key} < $${values.length}`); }
+        if (op === 'in') {
+          const list = v.substring(1, val.length - 1).split(',');
+          const placeholders = list.map(item => {
+            values.push(item);
+            return `$${values.length}`;
+          }).join(',');
+          wheres.push(`${key} IN (${placeholders})`);
+        }
+      }
+      if (wheres.length > 0) sql += ' WHERE ' + wheres.join(' AND ');
+    }
+
+    const res = await query(sql, values);
+    return res.rows;
+  }
+
+  async function rpc(functionName, body) {
+    const keys = Object.keys(body || {});
+    const values = [];
+    const args = keys.map((k) => {
+       let val = body[k];
+       if (Array.isArray(val) || (val && typeof val === 'object')) { val = JSON.stringify(val); }
+       values.push(val);
+       return `${k} := $${values.length}`;
+    });
+    const sql = `SELECT * FROM ${functionName}(${args.join(', ')})`;
+    const res = await query(sql, values);
+    return res.rows;
   }
 
   function mapUserFromRow(row) {

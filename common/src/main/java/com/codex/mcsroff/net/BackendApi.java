@@ -33,6 +33,13 @@ public final class BackendApi {
         return this.streamBaseUrl + "?match_id=" + URLEncoder.encode(matchId == null ? "" : matchId, StandardCharsets.UTF_8);
     }
 
+    public String getMatchWebSocketUrl(String matchId) {
+        String wsBase = this.baseUrl
+                .replace("http://", "ws://")
+                .replace("https://", "wss://");
+        return wsBase.replace("/matchmaker", "") + "/ws/match/" + URLEncoder.encode(matchId == null ? "" : matchId, StandardCharsets.UTF_8);
+    }
+
     public JsonObject invokeMatchmaker(String action, JsonObject payload, AuthSession session) throws IOException {
         JsonObject requestBody = payload == null
                 ? new JsonObject()

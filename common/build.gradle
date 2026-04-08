@@ -7,5 +7,7 @@ repositories {
 }
 
 dependencies {
-
+    // WebSocket client for real-time match streaming (Java 8 compatible)
+    implementation 'javax.websocket:javax.websocket-api:1.1'
+    implementation 'org.glassfish.tyrus.bundles:tyrus-standalone-client:1.20'
 }

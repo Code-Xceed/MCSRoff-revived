@@ -24,7 +24,6 @@ import net.minecraft.world.level.LevelSettings;
 import net.minecraft.world.level.storage.PrimaryLevelData;
 import net.minecraft.world.level.storage.WorldData;
 
-import java.lang.reflect.Field;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Queue;
@@ -496,9 +495,7 @@ public final class TelemetryManager {
                     current.gameRules(),
                     current.getDataPackConfig()
             );
-            Field settingsField = PrimaryLevelData.class.getDeclaredField("settings");
-            settingsField.setAccessible(true);
-            settingsField.set(primaryLevelData, updated);
+            ((com.codex.mcsroff.mixin.PrimaryLevelDataAccessor) primaryLevelData).setSettings(updated);
         } catch (Throwable ignored) {
         }
     }

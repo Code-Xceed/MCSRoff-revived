@@ -85,6 +85,32 @@ final class HttpJsonClient {
         return headers;
     }
 
+    /**
+     * POST JSON with exponential backoff retry on server errors (5xx).
+     * Retries up to maxRetries times with increasing delays.
+     */
+    static JsonObject postJsonWithRetry(String url, Map<String, String> headers, JsonObject body, int maxRetries) throws IOException {
+        int attempt = 0;
+        while (true) {
+            try {
+                return postJson(url, headers, body);
+            } catch (HttpRequestException exception) {
+                if (exception.getStatusCode() >= 500 && attempt < maxRetries) {
+                    long delay = Math.min(1000L * (1L << attempt), 10000L);
+                    try {
+                        Thread.sleep(delay);
+                    } catch (InterruptedException interrupted) {
+                        Thread.currentThread().interrupt();
+                        throw exception;
+                    }
+                    attempt++;
+                    continue;
+                }
+                throw exception;
+            }
+        }
+    }
+
     private static Map<String, String> defaultHeaders() {
         Map<String, String> headers = new HashMap<String, String>();
         headers.put("Accept", "application/json");
