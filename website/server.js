@@ -168,6 +168,23 @@ const matchmakingController = createMatchmakingController({
   reportMatchForfeit
 });
 
+let runtimeErrorHandlersInstalled = false;
+if (!runtimeErrorHandlersInstalled) {
+  runtimeErrorHandlersInstalled = true;
+  process.on('unhandledRejection', (reason) => {
+    logError('unhandled_rejection', {
+      error_message: reason && reason.message ? reason.message : String(reason),
+      error_stack: reason && reason.stack ? reason.stack : ''
+    });
+  });
+  process.on('uncaughtException', (error) => {
+    logError('uncaught_exception', {
+      error_message: error && error.message ? error.message : String(error),
+      error_stack: error && error.stack ? error.stack : ''
+    });
+  });
+}
+
 if (STORAGE_BACKEND === 'json') {
   storage.ensureStorage();
 }
@@ -288,6 +305,15 @@ const server = http.createServer(async (request, response) => {
         <p class="helper">Request ID: <code>${escapeHtml(requestContext.id)}</code></p>
       </section>
     `));
+  }
+});
+
+server.on('clientError', (error, socket) => {
+  logWarn('client_error', {
+    error_message: error && error.message ? error.message : String(error)
+  });
+  if (socket && !socket.destroyed) {
+    socket.end('HTTP/1.1 400 Bad Request\r\n\r\n');
   }
 });
 

@@ -93,6 +93,9 @@ function createMatchStreamHub() {
 }
 
 function writeSnapshot(response, payload) {
+  if (!response || response.destroyed || response.writableEnded) {
+    return;
+  }
   response.write('event: snapshot\n');
   response.write(`data: ${JSON.stringify(payload)}\n\n`);
 }

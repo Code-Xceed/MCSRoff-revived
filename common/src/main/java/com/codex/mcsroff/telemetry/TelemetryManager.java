@@ -36,8 +36,10 @@ public final class TelemetryManager {
     private static final long REALTIME_FRESHNESS_MILLIS = 3500L;
     private static final long LOCAL_STATE_FORFEIT_GRACE_MILLIS = 5000L;
     private final Queue<LocalAdvancementUpdate> pendingAdvancements = new ConcurrentLinkedQueue<LocalAdvancementUpdate>();
+    private final Queue<PendingActivityReport> pendingActivities = new ConcurrentLinkedQueue<PendingActivityReport>();
 
     private CompletableFuture<RemoteMatchSnapshot> pendingSnapshotFuture;
+    private PendingActivityReport inFlightActivity;
     private long nextPollAtMillis = -1L;
     private long lastSeenEventSequence;
     private boolean startReported;
@@ -75,12 +77,11 @@ public final class TelemetryManager {
         McsroffRuntime.getMatchRealtimeClient().ensureStreaming(session.getMatchId());
         consumeRealtimeSnapshot(minecraft, session);
         consumeBackendResult(minecraft, session);
-        if (this.pendingSnapshotFuture == null) {
-            flushLocalSignals(minecraft, session);
-        }
+        flushLocalSignals(minecraft, session);
 
         long now = System.currentTimeMillis();
         if (this.pendingSnapshotFuture == null
+                && this.pendingActivities.isEmpty()
                 && now >= this.nextPollAtMillis
                 && !McsroffRuntime.getMatchRealtimeClient().isFresh(now, REALTIME_FRESHNESS_MILLIS)) {
             requestPoll(session);
@@ -138,21 +139,18 @@ public final class TelemetryManager {
 
     private void flushLocalSignals(Minecraft minecraft, MatchSession session) {
         if (!this.startReported) {
-            reportActivity(session, "activity", "started_match", "Started Match", "", "");
+            enqueueActivity("activity", "started_match", "Started Match", "", "");
             this.startReported = true;
-            return;
         }
 
         String dimensionKey = getDimensionKey(minecraft.level.dimension());
         if (!dimensionKey.equals(this.lastDimensionKey)) {
             this.lastDimensionKey = dimensionKey;
             if ("minecraft:the_nether".equals(dimensionKey)) {
-                reportActivity(session, "activity", "entered_nether", "Entered Nether", "", "");
-                return;
+                enqueueActivity("activity", "entered_nether", "Entered Nether", "", "");
             }
             if ("minecraft:the_end".equals(dimensionKey)) {
-                reportActivity(session, "activity", "in_the_end", "In the End", "", "");
-                return;
+                enqueueActivity("activity", "in_the_end", "In the End", "", "");
             }
         }
 
@@ -162,7 +160,17 @@ public final class TelemetryManager {
             if ("minecraft:end/kill_dragon".equals(update.getAdvancementId())) {
                 session.setDragonKillConfirmed(true);
             }
-            reportActivity(session, "advancement:" + update.getFrameType(), update.getAdvancementId(), statusText, update.getTitle(), update.getAdvancementId());
+            enqueueActivity(
+                    "advancement:" + update.getFrameType(),
+                    update.getAdvancementId(),
+                    statusText,
+                    update.getTitle(),
+                    update.getAdvancementId()
+            );
+        }
+
+        if (this.pendingSnapshotFuture == null) {
+            dispatchNextActivity(session);
         }
     }
 
@@ -176,10 +184,39 @@ public final class TelemetryManager {
         this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
     }
 
-    private void reportActivity(MatchSession session, String type, String activityKey, String statusText, String chatMessage, String advancementId) {
+    private void dispatchNextActivity(MatchSession session) {
+        PendingActivityReport next = this.pendingActivities.peek();
+        if (next == null || !McsroffRuntime.getAccountManager().hasTrustedSession()) {
+            return;
+        }
+        this.inFlightActivity = next;
+        reportActivity(session, next);
+    }
+
+    private void enqueueActivity(String type, String activityKey, String statusText, String chatMessage, String advancementId) {
+        PendingActivityReport next = new PendingActivityReport(type, activityKey, statusText, chatMessage, advancementId);
+        PendingActivityReport current = this.inFlightActivity;
+        if (current != null && current.samePayload(next)) {
+            return;
+        }
+        Iterator<PendingActivityReport> iterator = this.pendingActivities.iterator();
+        while (iterator.hasNext()) {
+            if (iterator.next().samePayload(next)) {
+                return;
+            }
+        }
+        this.pendingActivities.add(next);
+    }
+
+    private void reportActivity(MatchSession session, PendingActivityReport activity) {
         if (!McsroffRuntime.getAccountManager().hasTrustedSession()) {
             return;
         }
+        if (activity == null) {
+            return;
+        }
+        String activityKey = activity.getActivityKey();
+        String statusText = activity.getStatusText();
         if (statusText != null && !statusText.isEmpty() && activityKey != null && activityKey.equals(this.lastReportedActivityKey)) {
             long now = System.currentTimeMillis();
             if (now - this.lastReportedActivityAtMillis < 1500L) {
@@ -187,8 +224,8 @@ public final class TelemetryManager {
             }
         }
 
-        if (statusText != null && !statusText.isEmpty()) {
-            this.lastReportedActivityKey = activityKey == null ? "" : activityKey;
+        if (!statusText.isEmpty()) {
+            this.lastReportedActivityKey = activityKey;
             this.lastReportedActivityAtMillis = System.currentTimeMillis();
         }
 
@@ -196,11 +233,11 @@ public final class TelemetryManager {
                 McsroffRuntime.getBackendApi().reportActivity(
                         authSession,
                         session.getMatchId(),
-                        type,
+                        activity.getType(),
                         activityKey,
                         statusText,
-                        chatMessage,
-                        advancementId
+                        activity.getChatMessage(),
+                        activity.getAdvancementId()
                 )
         );
         this.nextPollAtMillis = System.currentTimeMillis() + HEARTBEAT_INTERVAL_MILLIS;
@@ -240,6 +277,12 @@ public final class TelemetryManager {
 
         try {
             RemoteMatchSnapshot snapshot = this.pendingSnapshotFuture.join();
+            if (this.inFlightActivity != null) {
+                PendingActivityReport head = this.pendingActivities.peek();
+                if (head != null && head.samePayload(this.inFlightActivity)) {
+                    this.pendingActivities.poll();
+                }
+            }
             applySnapshot(minecraft, session, snapshot);
         } catch (Exception exception) {
             if (this.finishSubmissionInFlight) {
@@ -253,6 +296,7 @@ public final class TelemetryManager {
         } finally {
             this.finishSubmissionInFlight = false;
             this.forfeitSubmissionInFlight = false;
+            this.inFlightActivity = null;
             this.pendingSnapshotFuture = null;
         }
     }
@@ -330,6 +374,7 @@ public final class TelemetryManager {
 
     private void clearRuntimeState() {
         this.pendingSnapshotFuture = null;
+        this.inFlightActivity = null;
         this.nextPollAtMillis = -1L;
         this.lastSeenEventSequence = 0L;
         this.startReported = false;
@@ -343,6 +388,7 @@ public final class TelemetryManager {
         this.missingLocalStateSinceMillis = -1L;
         this.lastResolvedMatchId = "";
         this.pendingAdvancements.clear();
+        this.pendingActivities.clear();
     }
 
     private void requestForfeit(MatchSession session) {

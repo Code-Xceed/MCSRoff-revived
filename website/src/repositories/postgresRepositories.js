@@ -18,6 +18,24 @@ function createPostgresRepositories() {
     Authorization: `Bearer ${config.supabaseServiceRoleKey}`,
     'Content-Type': 'application/json'
   };
+  const REQUEST_TIMEOUT_MILLIS = 15000;
+
+  async function fetchWithTimeout(url, options) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MILLIS);
+    try {
+      return await fetch(url, Object.assign({}, options, {
+        signal: controller.signal
+      }));
+    } catch (error) {
+      if (error && error.name === 'AbortError') {
+        throw new Error(`PostgREST request timed out after ${REQUEST_TIMEOUT_MILLIS}ms: ${url}`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
   async function request(method, table, options) {
     const query = new URLSearchParams();
@@ -29,7 +47,7 @@ function createPostgresRepositories() {
     });
     const url = `${restBaseUrl}/${table}${query.toString() ? `?${query.toString()}` : ''}`;
     const headers = Object.assign({}, authHeaders, options && options.headers ? options.headers : {});
-    const response = await fetch(url, {
+    const response = await fetchWithTimeout(url, {
       method,
       headers,
       body: options && options.body !== undefined ? JSON.stringify(options.body) : undefined
@@ -45,7 +63,7 @@ function createPostgresRepositories() {
   }
 
   async function rpc(functionName, body) {
-    const response = await fetch(`${restBaseUrl}/rpc/${functionName}`, {
+    const response = await fetchWithTimeout(`${restBaseUrl}/rpc/${functionName}`, {
       method: 'POST',
       headers: authHeaders,
       body: JSON.stringify(body || {})
