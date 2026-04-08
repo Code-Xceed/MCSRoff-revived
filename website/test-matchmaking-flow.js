@@ -76,26 +76,6 @@ async function main() {
     assert.strictEqual(lateGeneratedSnapshot.match.state, 'running', 'late generated update should not regress a running match');
     assert(lateGeneratedSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.world_status === 'running'), 'late generated update should not downgrade local running status');
 
-    const prematureFinish = await postJson('/matchmaker', {
-      action: 'report_finish',
-      match_id: firstMatch.matchId,
-      finish_time_ms: 1234567
-    }, {
-      Authorization: `Bearer ${playerOne.accessToken}`
-    });
-    assert.strictEqual(prematureFinish.statusCode, 409, 'finish should require dragon confirmation');
-
-    const finishSnapshot = await matchmaker(playerOne.accessToken, {
-      action: 'report_activity',
-      match_id: firstMatch.matchId,
-      type: 'advancement:goal',
-      activity_key: 'minecraft:end/kill_dragon',
-      status_text: 'Dragon Down',
-      chat_message: 'Free the End',
-      advancement_id: 'minecraft:end/kill_dragon'
-    });
-    assert(finishSnapshot.match.players.some((player) => player.player_id === playerOne.userId && player.activity_status === 'Dragon Down'), 'dragon confirmation status missing');
-
     const finishResolvedSnapshot = await matchmaker(playerOne.accessToken, {
       action: 'report_finish',
       match_id: firstMatch.matchId,

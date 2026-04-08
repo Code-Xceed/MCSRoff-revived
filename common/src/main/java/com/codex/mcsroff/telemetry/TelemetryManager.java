@@ -114,24 +114,17 @@ public final class TelemetryManager {
         if (advancementId == null || advancementId.isEmpty() || title == null || title.isEmpty()) {
             return;
         }
-        if ("minecraft:end/kill_dragon".equals(advancementId)) {
-            McsroffRuntime.getMatchManager().updateDragonKillConfirmed(true);
-        }
         this.pendingAdvancements.add(new LocalAdvancementUpdate(advancementId, normalizeAdvancementFrame(frameType), title));
     }
 
-    public boolean shouldSuppressWinGamePacket() {
+    public boolean isLiveMatchRunning() {
         MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
-        if (session == null) {
-            return false;
-        }
-        MatchPhase phase = session.getPhase();
-        return phase == MatchPhase.RUNNING || phase == MatchPhase.FINISHED;
+        return session != null && session.getPhase() == MatchPhase.RUNNING;
     }
 
     public void reportLocalPortalFinish() {
         MatchSession session = McsroffRuntime.getMatchManager().getCurrentSession();
-        if (session == null || session.getPhase() != MatchPhase.RUNNING || !session.isDragonKillConfirmed()) {
+        if (session == null || session.getPhase() != MatchPhase.RUNNING) {
             return;
         }
         submitFinish(session);
@@ -157,9 +150,6 @@ public final class TelemetryManager {
         LocalAdvancementUpdate update = this.pendingAdvancements.poll();
         if (update != null) {
             String statusText = mapStatusFromAdvancement(update.getAdvancementId());
-            if ("minecraft:end/kill_dragon".equals(update.getAdvancementId())) {
-                session.setDragonKillConfirmed(true);
-            }
             enqueueActivity(
                     "advancement:" + update.getFrameType(),
                     update.getAdvancementId(),
@@ -255,17 +245,7 @@ public final class TelemetryManager {
         McsroffRuntime.getMatchManager().updateFinishReported(true);
         this.finishSubmissionInFlight = true;
         this.pendingSnapshotFuture = McsroffRuntime.getAccountManager().executeAuthenticated(authSession ->
-                McsroffRuntime.getBackendApi().reportActivity(
-                        authSession,
-                        session.getMatchId(),
-                        "advancement:goal",
-                        "minecraft:end/kill_dragon",
-                        "Dragon Down",
-                        "Free the End",
-                        "minecraft:end/kill_dragon"
-                ).thenCompose(snapshot ->
-                        McsroffRuntime.getBackendApi().reportFinish(authSession, session.getMatchId(), finishTimeMs)
-                )
+                McsroffRuntime.getBackendApi().reportFinish(authSession, session.getMatchId(), finishTimeMs)
         );
         this.nextPollAtMillis = now + HEARTBEAT_INTERVAL_MILLIS;
     }

@@ -538,7 +538,7 @@ function createMatchmakingController(options) {
 
     const outcome = await reportMatchFinish(match, user.id, body.finish_time_ms);
     if (!outcome.ok) {
-      const code = outcome.code === 'match_not_running' || outcome.code === 'dragon_not_confirmed' ? 409 : 400;
+      const code = outcome.code === 'match_not_running' ? 409 : 400;
       return sendJson(response, code, { error: outcome.code });
     }
     return sendSnapshot(response, outcome.match);
