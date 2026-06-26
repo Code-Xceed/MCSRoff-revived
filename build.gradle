@@ -7,5 +7,14 @@ plugins {
 }
 
 forgix {
+    group = "com.codex.mcsroff"
+    
+    fabric {
+        // Auto-detected from project name
+    }
+    forge {
+        // Auto-detected from project name
+    }
+
     autoRun = true
 }

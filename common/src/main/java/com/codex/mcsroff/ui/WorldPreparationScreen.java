@@ -11,11 +11,13 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.TextComponent;
 import net.minecraft.resources.ResourceLocation;
+import java.util.List;
 
+@SuppressWarnings({"rawtypes", "unchecked"})
 public final class WorldPreparationScreen extends Screen {
     private static final int FRAME_LIGHT = 0xFF6E6E6E;
     private static final int FRAME_DARK = 0xFF2A2A2A;
-    private static final int PANEL_FILL = 0xC4181818;
+    private static final int PANEL_FILL = 0xCC1A1A1A;
     private static final int PANEL_INSET = 0xAA3B3B3B;
     private Button quitButton;
 
@@ -26,7 +28,7 @@ public final class WorldPreparationScreen extends Screen {
     @Override
     protected void init() {
         int buttonWidth = 132;
-        this.quitButton = this.addButton(new Button(
+        this.quitButton = new Button(
                 (this.width - buttonWidth) / 2,
                 (this.height / 2) + 74,
                 buttonWidth,
@@ -38,7 +40,9 @@ public final class WorldPreparationScreen extends Screen {
                         McsroffRuntime.getPreRaceController().quitAbortedMatch(Minecraft.getInstance());
                     }
                 }
-        ));
+        );
+        this.children.add(this.quitButton);
+        ((List) this.buttons).add(this.quitButton);
         this.quitButton.visible = false;
         this.quitButton.active = false;
     }

@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "mcsroff",
+  "version": "1.0.0",
+  "name": "offline MCSR",
+  "description": "",
+  "authors": ["Your Name"],
+  "contact": {
+    "homepage": "https://fabricmc.net/",
+    "sources": "https://github.com/fabricmc/"
+  },
+  "license": "MIT",
+  "icon": "assets/mcsroff/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "main": [
+      "com.codex.mcsroff.McsroffFabric"
+    ]
+  },
+  "mixins": [
+    "mcsroff.mixins_fabric_fabric.json"
+  ],
+  "depends": {
+    "fabric": "*",
+    "minecraft": ["1.16.1"]
+  }
+}

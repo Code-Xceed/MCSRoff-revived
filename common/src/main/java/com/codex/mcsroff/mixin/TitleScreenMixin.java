@@ -1,11 +1,11 @@
 package com.codex.mcsroff.mixin;
 
 import com.codex.mcsroff.ui.AuthGateScreen;
-import com.codex.mcsroff.ui.McsroffIconButton;
 import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.gui.screens.TitleScreen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.TextComponent;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
@@ -21,22 +21,26 @@ public abstract class TitleScreenMixin extends Screen {
 
     @Inject(method = "init", at = @At("TAIL"))
     private void mcsroff$addButton(CallbackInfo callbackInfo) {
-        int buttonSize = 20;
-        int margin = 4;
-        int x = this.width - buttonSize - margin;
-        int y = margin;
+        // Add a clearly visible MCSR button below the standard title screen buttons
+        int buttonWidth = 200;
+        int centerX = this.width / 2;
+        int buttonY = this.height / 4 + 140;
 
-        this.children.add(addTitleButton(new McsroffIconButton(x, y, new Button.OnPress() {
-            @Override
-            public void onPress(Button button) {
-                TitleScreenMixin.this.minecraft.setScreen(new AuthGateScreen((Screen) (Object) TitleScreenMixin.this));
-            }
-        })));
+        Button mcsrButton = new Button(
+                centerX - buttonWidth / 2,
+                buttonY,
+                buttonWidth,
+                20,
+                new TextComponent("\u00A76\u269B offline MCSR"),
+                button -> this.minecraft.setScreen(new AuthGateScreen((Screen) (Object) this))
+        );
+
+        addModButton(mcsrButton);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
-    private Button addTitleButton(Button button) {
+    private void addModButton(Button button) {
+        this.children.add(button);
         ((List) this.buttons).add(button);
-        return button;
     }
 }

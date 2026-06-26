@@ -19,6 +19,11 @@ import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 public final class McsroffMenuScreen extends Screen {
+    private static final int FRAME_LIGHT = 0xFF6E6E6E;
+    private static final int FRAME_DARK = 0xFF2A2A2A;
+    private static final int PANEL_FILL = 0xCC1A1A1A;
+    private static final int PANEL_INSET = 0xAA3B3B3B;
+
     private final Screen lastScreen;
 
     private List<FsgFilter> filters = Collections.emptyList();
@@ -135,27 +140,48 @@ public final class McsroffMenuScreen extends Screen {
     @Override
     public void render(PoseStack poseStack, int mouseX, int mouseY, float partialTick) {
         this.renderBackground(poseStack);
-        drawCenteredString(poseStack, this.font, this.title, this.width / 2, 20, 16777215);
-        drawCenteredString(poseStack, this.font, new TextComponent("Loader: " + McsroffMod.getLoaderType().getId()), this.width / 2, 40, 10526880);
+
+        // Position the panel to wrap around the button area (buttons are at height/4 + 24..+176)
+        int baseY = this.height / 4 + 24;
+        int panelWidth = 284;
+        int panelHeight = 190;
+        int panelX = (this.width - panelWidth) / 2;
+        int panelY = baseY - 14;
+
+        renderFrame(poseStack, panelX, panelY, panelWidth, panelHeight);
+        renderInset(poseStack, panelX + 10, panelY + 10, panelWidth - 20, 18);
+        drawCenteredString(poseStack, this.font, this.title, this.width / 2, panelY + 15, 16777215);
+
+        // Info section
+        int infoSectionY = panelY + 36;
+        renderInset(poseStack, panelX + 12, infoSectionY, panelWidth - 24, 50);
+        drawString(poseStack, this.font, "Loader: " + McsroffMod.getLoaderType().getId(), panelX + 20, infoSectionY + 6, 10526880);
+        drawString(poseStack, this.font, "Player: " + this.minecraft.getUser().getName(), panelX + 20, infoSectionY + 18, 10526880);
+
         AuthSession session = McsroffRuntime.getAccountManager().getCurrentSession();
-        drawCenteredString(poseStack, this.font, new TextComponent("Player: " + this.minecraft.getUser().getName()), this.width / 2, 52, 10526880);
-        drawCenteredString(
+        drawString(
                 poseStack,
                 this.font,
-                new TextComponent(session == null
+                fit(session == null
                         ? "Account: Not linked"
-                        : "Account: " + session.getDisplayName() + " | " + session.getRankTier() + " | Elo " + session.getElo()),
-                this.width / 2,
-                64,
+                        : "Account: " + session.getDisplayName() + " | " + session.getRankTier() + " | Elo " + session.getElo(), panelWidth - 40),
+                panelX + 20,
+                infoSectionY + 30,
                 10526880
         );
 
-        drawCenteredString(poseStack, this.font, new TextComponent("Seed Type"), this.width / 2, this.height / 4 + 78, 16777215);
-        drawCenteredString(poseStack, this.font, new TextComponent(getSelectedFilterLabel()), this.width / 2, this.height / 4 + 90, 16777215);
-        drawCenteredString(poseStack, this.font, new TextComponent(getSelectedFilterSummary()), this.width / 2, this.height / 4 + 102, 10526880);
+        // Seed type section
+        int seedSectionY = panelY + 94;
+        renderInset(poseStack, panelX + 12, seedSectionY, panelWidth - 24, 44);
+        drawString(poseStack, this.font, "Seed Type", panelX + 20, seedSectionY + 4, 16777215);
+        drawString(poseStack, this.font, getSelectedFilterLabel(), panelX + 20, seedSectionY + 16, 16777215);
+        drawString(poseStack, this.font, fit(getSelectedFilterSummary(), panelWidth - 40), panelX + 20, seedSectionY + 28, 10526880);
 
-        int infoY = this.height / 4 + 198;
-        drawCenteredString(poseStack, this.font, new TextComponent(this.statusMessage), this.width / 2, infoY, 16777215);
+        // Status section
+        int statusSectionY = panelY + 146;
+        renderInset(poseStack, panelX + 12, statusSectionY, panelWidth - 24, 32);
+        drawString(poseStack, this.font, "Status", panelX + 20, statusSectionY + 4, 11184810);
+        drawString(poseStack, this.font, fit(this.statusMessage, panelWidth - 40), panelX + 20, statusSectionY + 16, 16777215);
 
         super.render(poseStack, mouseX, mouseY, partialTick);
     }
@@ -373,6 +399,35 @@ public final class McsroffMenuScreen extends Screen {
             return "Cooldown " + ((FsgCooldownException) current).getCooldownMillis() + "ms";
         }
         return current.getMessage() == null ? current.getClass().getSimpleName() : current.getMessage();
+    }
+
+    private void renderFrame(PoseStack poseStack, int x, int y, int width, int height) {
+        fill(poseStack, x, y, x + width, y + height, PANEL_FILL);
+        fill(poseStack, x, y, x + width, y + 1, FRAME_LIGHT);
+        fill(poseStack, x, y, x + 1, y + height, FRAME_LIGHT);
+        fill(poseStack, x + width - 1, y, x + width, y + height, FRAME_DARK);
+        fill(poseStack, x, y + height - 1, x + width, y + height, FRAME_DARK);
+    }
+
+    private void renderInset(PoseStack poseStack, int x, int y, int width, int height) {
+        fill(poseStack, x, y, x + width, y + height, PANEL_INSET);
+        fill(poseStack, x, y, x + width, y + 1, FRAME_DARK);
+        fill(poseStack, x, y, x + 1, y + height, FRAME_DARK);
+        fill(poseStack, x + width - 1, y, x + width, y + height, FRAME_LIGHT);
+        fill(poseStack, x, y + height - 1, x + width, y + height, FRAME_LIGHT);
+    }
+
+    private String fit(String value, int maxWidth) {
+        if (value == null) {
+            return "";
+        }
+        String trimmed = this.font.plainSubstrByWidth(value, maxWidth);
+        if (trimmed.length() == value.length()) {
+            return trimmed;
+        }
+        String ellipsis = "...";
+        String prefix = this.font.plainSubstrByWidth(value, Math.max(1, maxWidth - this.font.width(ellipsis)));
+        return prefix + ellipsis;
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})

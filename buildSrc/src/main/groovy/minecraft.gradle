@@ -29,8 +29,43 @@ unimined.minecraft(sourceSets.main, true) {
     }
 }
 
+configurations {
+    embed
+    implementation.extendsFrom(embed)
+}
+
 dependencies {
     implementation(project(":common"))
+
+    // WebSocket client for real-time match streaming.
+    // javax.websocket + tyrus must be embedded in the mod JAR because they are
+    // not available on the Minecraft runtime classpath (Java EE, not Java SE).
+    embed 'javax.websocket:javax.websocket-api:1.1'
+    embed 'org.glassfish.tyrus.bundles:tyrus-standalone-client:1.20'
+}
+
+// Create a fat JAR that embeds websocket runtime dependencies.
+// Unimined's remapJar creates a fresh JAR from class files, so we must
+// feed it the pre-merged JAR as input.
+def shadeJarTask = tasks.register('shadeJar', Jar) { jarTask ->
+    jarTask.group = 'build'
+    jarTask.description = 'Assembles a fat JAR with embedded websocket runtime dependencies.'
+    jarTask.archiveClassifier = 'shaded-dev'
+    jarTask.from(sourceSets.main.output)
+    jarTask.from({
+        configurations.embed.collect { it.isDirectory() ? it : zipTree(it) }
+    })
+    jarTask.duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// Defer remapJar configuration until after project evaluation because
+// Unimined creates the task during a later phase.
+afterEvaluate {
+    def remapTask = tasks.findByName('remapJar')
+    if (remapTask != null) {
+        remapTask.dependsOn(shadeJarTask)
+        remapTask.inputFile.set(shadeJarTask.flatMap { it.archiveFile })
+    }
 }
 
 processResources {

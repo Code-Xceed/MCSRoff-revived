@@ -14,7 +14,7 @@ import net.minecraft.resources.ResourceLocation;
 public final class PreRaceCountdownScreen extends Screen {
     private static final int FRAME_LIGHT = 0xFF6E6E6E;
     private static final int FRAME_DARK = 0xFF2A2A2A;
-    private static final int PANEL_FILL = 0xC4181818;
+    private static final int PANEL_FILL = 0xCC1A1A1A;
     private static final int PANEL_INSET = 0xAA3B3B3B;
 
     public PreRaceCountdownScreen() {
