@@ -16,7 +16,7 @@ import java.util.List;
 
 public final class ModConfig {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
-    private static final String DEFAULT_BACKEND_BASE_URL = resolveSetting("mcsroff.backendBaseUrl", "MCSROFF_BACKEND_BASE_URL", "http://localhost:8080");
+    private static final String DEFAULT_BACKEND_BASE_URL = resolveSetting("mcsroff.backendBaseUrl", "MCSROFF_BACKEND_BASE_URL", "https://mcsroff-revived.onrender.com");
     private static final String DEFAULT_WEB_AUTH_API_BASE_URL = resolveSetting("mcsroff.webAuthApiBaseUrl", "MCSROFF_WEB_AUTH_API_BASE_URL", "");
     private static final String DEFAULT_WEB_APP_BASE_URL = resolveSetting("mcsroff.webAppBaseUrl", "MCSROFF_WEB_APP_BASE_URL", "");
     private static final String DEFAULT_SUPABASE_URL = resolveSetting("mcsroff.supabaseUrl", "MCSROFF_SUPABASE_URL", "");
